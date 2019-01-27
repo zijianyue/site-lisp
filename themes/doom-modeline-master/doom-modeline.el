@@ -4,7 +4,7 @@
 
 ;; Author: Vincent Zhang <seagle0128@gmail.com>
 ;; Homepage: https://github.com/seagle0128/doom-modeline
-;; Version: 1.6.1
+;; Version: 1.6.2
 ;; Package-Requires: ((emacs "25.1") (all-the-icons "1.0.0") (shrink-path "0.2.0") (eldoc-eval "0.1") (dash "2.11.0"))
 ;; Keywords: faces mode-line
 
@@ -163,7 +163,7 @@ If DEFAULT is non-nil, set the default mode-line for all buffers."
   (if doom-modeline-mode
       (progn
         (doom-modeline-refresh-bars)    ; create bars
-        (doom-modeline-set-main-modeline t) ; set default mode-line.
+        (doom-modeline-set-main-modeline t) ; set default mode-line
         (unless after-init-time
           ;; These buffers are already created and don't get modelines. For the love
           ;; of Emacs, someone give the man a modeline!

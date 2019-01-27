@@ -1,2 +1,1 @@
-(if (fboundp 'normal-top-level-add-subdirs-to-load-path)
-    (normal-top-level-add-subdirs-to-load-path))
+../../../Cellar/emacs-mac/emacs-26.1-z-mac-7.4/share/emacs/site-lisp/subdirs.el

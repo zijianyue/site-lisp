@@ -74,9 +74,6 @@
     (-32800 "Request Cancelled"))
   "Alist of error codes to user friendly strings.")
 
-(defconst lsp--silent-errors '(-32800)
-  "Error codes that are okay to not notify the user about.")
-
 (defconst lsp--completion-item-kind
   [nil
    "Text"
@@ -106,7 +103,7 @@
    "TypeParameter"])
 
 (defcustom lsp-print-io nil
-  "If non-nil, print all messages to and from the language server to *Messages*."
+  "If non-nil, print all messages to and from the language server to *lsp-log*."
   :group 'lsp-mode
   :type 'boolean)
 
@@ -182,7 +179,7 @@ When set to t `lsp-mode' will auto-configure `lsp-ui' and `company-lsp'."
 
 (defvar lsp-clients (make-hash-table :test 'eql)
   "Hash table server-id -> client.
-It contains all of the clients that are currently regitered.")
+It contains all of the clients that are currently registered.")
 
 (defvar lsp-last-id 0
   "Last request id.")
@@ -538,6 +535,14 @@ FORMAT and ARGS i the same as for `message'."
 
 (defalias 'lsp-ht 'ht)
 
+;; `file-local-name' was added in Emacs 26.1.
+(defalias 'lsp-file-local-name
+  (if (fboundp 'file-local-name)
+      'file-local-name
+    (lambda (file)
+      "Return the local name component of FILE."
+      (or (file-remote-p file 'localname) file))))
+
 (defun lsp--merge-results (results method)
   "Merge RESULTS by filtering the empty hash-tables and merging the lists.
 METHOD is the executed method so the results could be merged
@@ -598,7 +603,7 @@ INHERIT-INPUT-METHOD will be proxied to `completing-read' without changes."
   (body-length nil) ;; length of current message body
   (body-received 0) ;; amount of current message body currently stored in 'body'
   (leftovers nil) ;; Leftover data from previous chunk; to be processed
-  (queued-notifications nil) ;; Unused field
+  (response-error nil) ;; the error that
   (queued-requests nil)
   (workspace nil))
 
@@ -784,7 +789,7 @@ DELETE when `lsp-mode.el' is deleted.")
 (defun lsp--path-to-uri (path)
   "Convert PATH to a uri."
   (concat lsp--uri-file-prefix
-          (url-hexify-string (file-truename (or (file-remote-p path 'localname t) path))
+          (url-hexify-string (expand-file-name (or (file-remote-p path 'localname t) path))
                              url-path-allowed-chars)))
 
 (defun lsp--string-match-any (regex-list str)
@@ -1006,11 +1011,11 @@ Results are meaningful only if FROM and TO are on the same line."
 (defun lsp--lens-update (ov)
   "Redraw quick-peek overlay OV."
   (let ((offset (lsp--lens-text-width (save-excursion
-                                          (beginning-of-visual-line)
-                                          (point))
-                                        (save-excursion
-                                          (beginning-of-line-text)
-                                          (point)))))
+                                        (beginning-of-visual-line)
+                                        (point))
+                                      (save-excursion
+                                        (beginning-of-line-text)
+                                        (point)))))
     (save-excursion
       (goto-char (overlay-start ov))
       (overlay-put ov
@@ -1389,8 +1394,10 @@ If WORKSPACE is not provided current workspace will be used."
                         (fboundp 'json-serialize))
                    (json-serialize params :null-object nil
                                    :false-object json-false)
-                 (json-encode params))))
-    (format "Content-Length: %d\r\n\r\n%s" (string-bytes body) body)))
+                 (json-encode params)))
+         (body-with-newline (concat body "\n")))
+    (concat (format "Content-Length: %d\r\n\r\n" (string-bytes body-with-newline))
+            body-with-newline)))
 
 (defun lsp--send-notification (body)
   "Send BODY as a notification to the language server."
@@ -1424,9 +1431,13 @@ If NO-WAIT is non-nil, don't synchronously wait for a response."
               (if no-wait
                   (lsp--send-no-wait message process)
                 (lsp--send-wait message process parser))
-              (when (not no-wait)
-                (prog1 (lsp--parser-response-result parser)
-                  (setf (lsp--parser-response-result parser) nil)))))
+              (unless no-wait
+                (unwind-protect
+                    (or (lsp--parser-response-result parser)
+                        (error (or (-some->> parser lsp--parser-response-error (gethash "message"))
+                                   "Unknown error occurred")))
+                  (setf (lsp--parser-response-result parser) nil
+                        (lsp--parser-response-error parser) nil)))))
           target-workspaces)
          method)
       (error "No workspace could handle %s" method))))
@@ -1438,11 +1449,11 @@ If NO-WAIT is non-nil, don't synchronously wait for a response."
 (cl-defun lsp-request (method params &key no-wait)
   (lsp--send-request `(:jsonrpc "2.0" :method ,method :params ,params) no-wait))
 
-(cl-defun lsp-request-async (method params callback &key mode)
+(cl-defun lsp-request-async (method params callback &key mode error-handler)
   "Send request METHOD with PARAMS."
-  (lsp--send-request-async `(:jsonrpc "2.0" :method ,method :params ,params) callback mode))
+  (lsp--send-request-async `(:jsonrpc "2.0" :method ,method :params ,params) callback mode error-handler))
 
-(defun lsp--create-async-callback-wrapper (count callback mode method)
+(defun lsp--create-async-callback (count callback mode method)
   "Create async handler expecting COUNT results, merge them and call CALLBACK.
 MODE determines when the callback will be called depending on the
 condition of the original buffer. METHOD is the invoked method."
@@ -1466,20 +1477,37 @@ condition of the original buffer. METHOD is the invoked method."
                       (eq buf (current-buffer)))
              (funcall callback (lsp--merge-results results method))))))))
 
-(defun lsp--send-request-async (body callback &optional mode)
+(defun lsp--create-default-error-handler (method)
+  "Default error handler.
+METHOD is the executed method."
+  (lambda (error)
+    (lsp--warn (or (gethash "message" error)
+                   (format "%s Request has failed" method)))))
+
+(defun lsp--send-request-async (body callback &optional mode error-callback)
   "Send BODY as a request to the language server.
 Call CALLBACK with the response recevied from the server
 asynchronously. MODE determines when the callback will be called
-depending on the condition of the original buffer."
+depending on the condition of the original buffer.
+ERROR-CALLBACK will be called in case the request has failed."
   (if-let ((target-workspaces (lsp--find-workspaces-for body)))
-      (let* ((async-callback (lsp--create-async-callback-wrapper
-                              (length target-workspaces) callback mode (plist-get body :method)))
+      (let* ((method (plist-get body :method))
+             (workspaces-count (length target-workspaces))
+             (async-callback (lsp--create-async-callback workspaces-count
+                                                         callback
+                                                         mode
+                                                         method))
+             (error-async-callback (lsp--create-async-callback workspaces-count
+                                                               (or error-callback
+                                                                   (lsp--create-default-error-handler method))
+                                                               mode
+                                                               method))
              (id (cl-incf lsp-last-id))
              (body (plist-put body :id id)))
         (--each target-workspaces
           (with-lsp-workspace it
             (let ((message (lsp--make-message body)))
-              (puthash id async-callback
+              (puthash id (list async-callback error-async-callback)
                        (-> lsp--cur-workspace
                            lsp--workspace-client
                            lsp--client-response-handlers))
@@ -2253,17 +2281,14 @@ If INCLUDE-DECLARATION is non-nil, request the server to include declarations."
                :context `(:includeDeclaration ,(or include-declaration json-false)))))
 
 (defun lsp--cancel-request (id)
-  "Cancel requiest with ID in all workspaces."
-  (lsp--cur-workspace-check)
-  (cl-check-type id (or number string))
+  "Cancel request with ID in all workspaces."
   (--each (lsp-workspaces)
     (with-lsp-workspace it
-      (let ((response-handlers (lsp--client-response-handlers (lsp--workspace-client
-                                                               lsp--cur-workspace))))
-        (remhash id response-handlers)
-        (lsp-notify "$/cancelRequest" `(:id ,id))))))
+      (->> lsp--cur-workspace lsp--workspace-client lsp--client-response-handlers (remhash id))
+      (lsp-notify "$/cancelRequest" `(:id ,id)))))
 
 (defun lsp-eldoc-function ()
+  "`lsp-mode' eldoc function."
   (run-hook-wrapped
    'lsp-eldoc-hook
    (lambda (fn)
@@ -2454,18 +2479,42 @@ RENDER-ALL - nil if only the signature should be rendered."
 
 (defalias 'lsp-get-or-calculate-code-actions 'lsp-code-actions-at-point)
 
+(defun lsp--execute-code-action (action)
+  "Parses a code action represented as a CodeAction LSP type."
+  ;; If we have edits, we can apply them directly without incurring in
+  ;; another roundtrip.
+  (when-let ((edit (gethash "edit" action)))
+    (lsp--apply-workspace-edit edit))
+  (if-let ((command (gethash "command" action))
+           (action-handler (lsp--find-action-handler command)))
+      (funcall action-handler action)
+    (lsp--execute-command command)))
+
+(defun lsp--execute-command (action)
+  "Parses and executes a code action represented as a Command LSP
+type."
+  (if-let* ((command (gethash "command" action))
+            (action-handler (lsp--find-action-handler command)))
+      (funcall action-handler action)
+    (lsp--send-execute-command command (gethash "arguments" action))))
+
+(defun lsp--execute-command-or-code-action (action)
+  "Parses and calls 'workspace/executeCommand' on the result of a
+'textDocument/codeAction' call, which can be a Command or a
+CodeAction type."
+  (when-let ((command (gethash "command" action)))
+    ;; If we have a "command" and it's of string type, we received a
+    ;; Command; otherwise, a CodeAction.
+    (if (stringp command)
+        (lsp--execute-command action)
+      (lsp--execute-code-action action))))
+
 (defun lsp-execute-code-action (action)
   "Execute code action ACTION.
 If ACTION is not set it will be selected from `lsp-code-actions'."
   (interactive (list (lsp--select-action
                       (lsp-code-actions-at-point))))
-  (when-let ((edit (gethash "edit" action)))
-    (lsp--apply-workspace-edit edit))
-  (when-let ((command (gethash "command" action)))
-    (if-let ((action-handler (lsp--find-action-handler command)))
-        (funcall action-handler action)
-      (lsp--send-execute-command (gethash "command" action)
-                                 (gethash "arguments" action nil)))))
+  (lsp--execute-command-or-code-action action))
 
 (defun lsp--make-document-formatting-params ()
   "Create document formatting params."
@@ -2666,9 +2715,21 @@ A reference is highlighted only if it is visible in a window."
   (mapcar #'lsp--symbol-information-to-xref
           (lsp-request "workspace/symbol" `(:query ,pattern))))
 
+(defun lsp--get-symbol-to-rename ()
+  "Get synbol at point."
+  (if (let ((table (lsp--capability "renameProvider")))
+        (and (hash-table-p table)
+             (gethash "prepareProvider" table)))
+      (-let (((start . end) (lsp--range-to-region
+                             (lsp-request "textDocument/prepareRename"
+                                          (lsp--text-document-position-params)))))
+        (buffer-substring-no-properties start end))
+    (thing-at-point 'symbol t)))
+
 (defun lsp-rename (newname)
   "Rename the symbol (and all references to it) under point to NEWNAME."
-  (interactive (list (read-string (format "Rename %s to: " (thing-at-point 'symbol t)))))
+  (interactive (list (let ((symbol (lsp--get-symbol-to-rename)))
+                       (read-string (format "Rename %s to: " symbol) symbol))))
   (lsp--cur-workspace-check)
   (unless (lsp--capability "renameProvider")
     (signal 'lsp-capability-not-supported (list "renameProvider")))
@@ -2875,7 +2936,8 @@ PARSER is the workspace parser used for handling the message."
           ("window/logMessage" 'lsp--window-log-message)
           ("textDocument/publishDiagnostics" 'lsp--on-diagnostics)
           ("textDocument/diagnosticsEnd" 'ignore)
-          ("textDocument/diagnosticsBegin" 'ignore)))
+          ("textDocument/diagnosticsBegin" 'ignore)
+          ("telemetry/event" 'ignore)))
 
 (defun lsp--on-notification (workspace notification)
   "Call the appropriate handler for NOTIFICATION."
@@ -2972,27 +3034,25 @@ WORKSPACE is the active workspace."
   (with-lsp-workspace (lsp--parser-workspace p)
     (let* ((client (lsp--workspace-client lsp--cur-workspace))
            (json-data (lsp--read-json msg (lsp--client-use-native-json client)))
-           (id (gethash "id" json-data nil)))
+           (id (--when-let (gethash "id" json-data)
+                 (if (stringp it) (string-to-number it) it))))
       (pcase (lsp--get-message-type json-data)
         ('response
          (cl-assert id)
-         (if-let (callback (gethash (if (stringp id)
-                                        (string-to-number id)
-                                      id)
-                                    (lsp--client-response-handlers client)
-                                    nil))
-             (progn (funcall callback (gethash "result" json-data nil))
+         (if-let (callback (first (gethash id (lsp--client-response-handlers client))))
+             (progn (funcall callback (gethash "result" json-data))
                     (remhash id (lsp--client-response-handlers client)))
-           (setf (lsp--parser-response-result p)
-                 (and json-data (gethash "result" json-data nil))
+           (setf (lsp--parser-response-result p) (gethash "result" json-data)
                  (lsp--parser-waiting-for-response p) nil)))
         ('response-error
-         (let* ((err (gethash "error" json-data nil))
-                (code (gethash "code" err nil)))
-           (when (not (memq code lsp--silent-errors))
-             (message (lsp--error-string err))))
-         (setf (lsp--parser-response-result p) nil
-               (lsp--parser-waiting-for-response p) nil))
+         (cl-assert id)
+         (if-let (callback (second (gethash id (lsp--client-response-handlers client))))
+             (progn
+               (funcall callback (gethash "error" json-data))
+               (remhash id (lsp--client-response-handlers client)))
+           (setf (lsp--parser-response-result p) nil
+                 (lsp--parser-response-error p) (gethash "error" json-data)
+                 (lsp--parser-waiting-for-response p) nil)))
         ('notification (lsp--on-notification lsp--cur-workspace json-data))
         ('request      (lsp--on-request lsp--cur-workspace json-data))))))
 
@@ -3216,7 +3276,13 @@ Return a nested alist keyed by symbol names. e.g.
 
 (defun lsp-server-present? (final-command)
   "Check whether FINAL-COMMAND is present."
-  (executable-find (nth 0 final-command)))
+  ;; executable-find only gained support for remote checks after 26.1 release
+  (cond
+   ((not (file-remote-p default-directory))
+    (executable-find (nth 0 final-command)))
+   ((not (version<= emacs-version "26.1"))
+    (executable-find (nth 0 final-command) (file-remote-p default-directory)))
+   (t)))
 
 (defun lsp-stdio-connection (command)
   "Create LSP stdio connection named name.
@@ -3295,32 +3361,23 @@ COMMAND-FN will be called to generate Language Server command."
                 (cons tcp-proc proc)))
    :test? (lambda () (-> command lsp-resolve-final-function lsp-server-present?))))
 
-(defun lsp-tramp-connection (command-fn)
-  "Create LSP TRAMP connection named.
-COMMAND-FN will be called to generate Language Server command."
-  (list
-   :connect (lambda (filter sentinel name)
-              (let* ((host (file-remote-p (buffer-file-name) 'host t))
-                     (port (lsp--find-available-port host (cl-incf lsp--tcp-port)))
-                     (command (funcall command-fn name port))
-                     (proc (progn
-                             (lsp--info "Starting %s" command)
-                             (async-shell-command command
-                                                  (generate-new-buffer-name (format "%s::stdout" name))
-                                                  (generate-new-buffer-name (format "%s::stderr" name)))))
-                     (tcp-proc (lsp--open-network-stream host port (concat name "::tramp::tcp"))))
-
-                (set-process-sentinel proc sentinel)
-                (set-process-query-on-exit-flag proc nil)
-                (set-process-query-on-exit-flag tcp-proc nil)
-                (set-process-filter tcp-proc filter)
-                (cons tcp-proc proc)))
-   :test? (-const t)))
-
-(defun lsp-make-nc-tramp-command (program)
-  "Return a function which will convert PROGRAM from STDIO command to TCP one."
-  (lambda (_name port)
-    (format "nc -l -p %s -c '%s'" port program)))
+(defun lsp-tramp-connection (local-command)
+  "Create LSP stdio connection named name.
+COMMAND is either list of strings, string or function which
+returns the command to execute."
+  (list :connect (lambda (filter sentinel name)
+                   (let* ((final-command (lsp-resolve-final-function local-command))
+                          ;; wrap with stty to disable converting \r to \n
+                          (wrapped-command (append '("stty" "-icrnl" ";") final-command))
+                          (process-name (generate-new-buffer-name name)))
+                     (let ((proc (apply 'start-file-process-shell-command process-name
+                                        (format "*%s*" process-name) wrapped-command)))
+                       (set-process-sentinel proc sentinel)
+                       (set-process-filter proc filter)
+                       (set-process-query-on-exit-flag proc nil)
+                       (set-process-coding-system proc 'binary 'binary)
+                       (cons proc proc))))
+        :test? (lambda () (-> local-command lsp-resolve-final-function lsp-server-present?))))
 
 (defun lsp--auto-configure ()
   "Autoconfigure `lsp-ui', `company-lsp' if they are installed."
@@ -3449,7 +3506,7 @@ SESSION is the active session."
       (run-hooks 'lsp-before-initialize-hook)
       (lsp-request-async "initialize"
                          (list :processId (emacs-pid)
-                               :rootPath (expand-file-name root)
+                               :rootPath (lsp-file-local-name (expand-file-name root))
                                :rootUri (lsp--path-to-uri root)
                                :capabilities (lsp--client-capabilities)
                                :initializationOptions initialization-options)
@@ -3748,11 +3805,13 @@ The library folders are defined by each client for each of the active workspace.
   (when-let (workspace (->> (lsp-session)
                             (lsp--session-workspaces)
                             (--first
-                             (when-let (library-folders-fn
-                                        (-> it lsp--workspace-client lsp--client-library-folders-fn))
-                               (-first (lambda (library-folder)
-                                         (f-ancestor-of? library-folder (buffer-file-name)))
-                                       (funcall library-folders-fn it))))))
+                             (and (-contains? (-> it lsp--workspace-client lsp--client-major-modes)
+                                              major-mode)
+                                  (when-let (library-folders-fn
+                                             (-> it lsp--workspace-client lsp--client-library-folders-fn))
+                                    (-first (lambda (library-folder)
+                                              (f-ancestor-of? library-folder (buffer-file-name)))
+                                            (funcall library-folders-fn it)))))))
     (lsp--open-in-workspace workspace)
     (view-mode t)
     (list workspace)))

@@ -63,6 +63,7 @@
 (defvar mc/mode-line)
 (defvar minions-mode)
 (defvar minions-mode-line-lighter)
+(defvar nyan-minimum-window-width)
 (defvar persp-nil-name)
 (defvar symbol-overlay-keywords-alist)
 (defvar symbol-overlay-temp-symbol)
@@ -268,6 +269,17 @@ mouse-1: Previous buffer\nmouse-3: Next buffer"
 (advice-add #'undo-tree-undo :after #'doom-modeline-update-buffer-file-name)
 (advice-add #'undo-tree-redo :after #'doom-modeline-update-buffer-file-name)
 (advice-add #'symbol-overlay-rename :after #'doom-modeline-update-buffer-file-name)
+
+(when (>= emacs-major-version 26)
+  (add-variable-watcher
+   'doom-modeline-buffer-file-name-style
+   (lambda (_sym val op _where)
+     (when (eq op 'set)
+       (setq doom-modeline-buffer-file-name-style val)
+       (dolist (buf (buffer-list))
+         (with-current-buffer buf
+           (if buffer-file-name
+               (doom-modeline-update-buffer-file-name))))))))
 
 (doom-modeline-def-segment buffer-info
   "Combined information about the current buffer, including the current working
@@ -1232,7 +1244,8 @@ See `mode-line-percent-position'.")
                " %l")
               (column-number-mode (doom-modeline-column-zero-based " :%c" " :%C")))))
     (if (and (bound-and-true-p nyan-mode)
-             (doom-modeline--active))
+             (doom-modeline--active)
+             (>= (window-width) nyan-minimum-window-width))
         (concat "  " (nyan-create) " "
                 (propertize (format-mode-line lc)
                             'help-echo "Buffer position\n\
@@ -1419,15 +1432,17 @@ Example:
            (doom-modeline--active)
            (> doom-modeline--github-notifications-number 0))
       (propertize
-       (concat (if doom-modeline-icon " ")
-               (doom-modeline-icon-faicon "github"
-                                          :v-adjust -0.0575
-                                          :face 'doom-modeline-warning)
-               (if doom-modeline-icon doom-modeline-vspc " ")
+       (concat " "
+               (if doom-modeline-icon
+                   (doom-modeline-icon-faicon "github"
+                                              :v-adjust -0.0575
+                                              :face 'doom-modeline-warning)
+                 (propertize "#" 'face '(:inherit (doom-modeline-warning italic))))
+               doom-modeline-vspc
                (propertize (number-to-string doom-modeline--github-notifications-number)
-                           'face 'doom-modeline-warning)
+                           'face '(:inherit (warning italic)))
                " ")
-       'help-echo "Github
+       'help-echo "Github Notifications
 mouse-1: Show notifications
 mouse-3: Fetch notifications"
        'mouse-face '(:box 1)
