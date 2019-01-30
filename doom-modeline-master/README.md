@@ -35,6 +35,7 @@ The `doom-modeline` was designed for minimalism, and offers:
 - An indicator for current input method
 - An indicator for `LSP` state
 - An indicator for github notifications
+- An indicator for unread emails with `mu4e-alert`.
 - An indicator for buffer position which is compatible with `nyan-mode`
 - An indicator for party parrot
 - An indicator for PDF page number
@@ -173,6 +174,9 @@ Strongly recommend to use
 
 ;; Whether display environment version or not.
 (setq doom-modeline-version t)
+
+;; Whether display mu4e notifications or not. Requires `mu4e-alert' package.
+(setq doom-modeline-mu4e t)
 ```
 
 ## FAQ
@@ -213,3 +217,17 @@ Strongly recommend to use
        up-to-date](https://magit.vc/manual/magit/The-mode_002dline-information-isn_0027t-always-up_002dto_002ddate.html)
      - [Maybe provide an alternative to VC's mode-line
        information](https://github.com/magit/magit/issues/2687)
+
+1. How can I define my own mode-line?
+
+   Use `doom-modeline-def-modeline` to define your own mode-line and set it as
+   default.
+
+   For example:
+
+   ```emacs-lisp
+   (doom-modeline-def-modeline 'my-simple-line
+     '(bar matches buffer-info remote-host buffer-position parrot selection-info)
+     '(misc-info minor-modes input-method buffer-encoding major-mode process vcs checker))
+   (doom-modeline-set-modeline 'my-simple-line 'default)
+   ```
