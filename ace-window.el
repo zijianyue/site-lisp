@@ -158,10 +158,11 @@ Consider changing this if the overlay tends to overlap with other things."
   '((?x aw-delete-window "Delete Window")
     (?m aw-swap-window "Swap Windows")
     (?M aw-move-window "Move Window")
+    (?c aw-copy-window "Copy Window")
     (?j aw-switch-buffer-in-window "Select Buffer")
     (?n aw-flip-window)
     (?u aw-switch-buffer-other-window "Switch Buffer Other Window")
-    (?c aw-split-window-fair "Split Fair Window")
+    (?F aw-split-window-fair "Split Fair Window")
     (?v aw-split-window-vert "Split Vert Window")
     (?b aw-split-window-horz "Split Horz Window")
     (?o delete-other-windows "Delete Other Windows")
@@ -215,7 +216,9 @@ or
            ;; Ignore major-modes and buffer-names in `aw-ignored-buffers'.
            (or (memq (buffer-local-value 'major-mode (window-buffer window))
                      aw-ignored-buffers)
-               (member (buffer-name (window-buffer window)) aw-ignored-buffers)))
+               (member (buffer-name (window-buffer window)) aw-ignored-buffers))
+           (or aw-ignore-current
+               (not (equal window (selected-window)))))
       ;; ignore child frames
       (and (fboundp 'frame-parent) (frame-parent (window-frame window)))
       ;; Ignore selected window if `aw-ignore-current' is non-nil.
@@ -724,6 +727,12 @@ Switch the current window to the previous buffer."
     (aw-switch-to-window window)
     (switch-to-buffer buffer)))
 
+(defun aw-copy-window (window)
+  "Copy the current buffer to WINDOW."
+  (let ((buffer (current-buffer)))
+    (aw-switch-to-window window)
+    (switch-to-buffer buffer)))
+
 (defun aw-split-window-vert (window)
   "Split WINDOW vertically."
   (select-window window)
@@ -750,10 +759,11 @@ Modify `aw-fair-aspect-ratio' to tweak behavior."
       (aw-split-window-vert window))))
 
 (defun aw-switch-buffer-other-window (window)
-  "Switch buffer in WINDOW without selecting WINDOW."
+  "Switch buffer in WINDOW."
   (aw-switch-to-window window)
-  (aw--switch-buffer)
-  (aw-flip-window))
+  (unwind-protect
+      (aw--switch-buffer)
+    (aw-flip-window)))
 
 (defun aw--face-rel-height ()
   (let ((h (face-attribute 'aw-leading-char-face :height)))
@@ -762,6 +772,8 @@ Modify `aw-fair-aspect-ratio' to tweak behavior."
        1)
       ((floatp h)
        (1+ (floor h)))
+      ((integerp h)
+       1)
       (t
        (error "unexpected: %s" h)))))
 
