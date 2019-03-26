@@ -5,7 +5,7 @@
 ;; Author: Bozhidar Batsov <bozhidar@batsov.com>
 ;; URL: https://github.com/bbatsov/projectile
 ;; Keywords: project, convenience
-;; Version: 2.0.0
+;; Version: 2.1.0-snapshot
 ;; Package-Requires: ((emacs "25.1") (pkg-info "0.4"))
 
 ;; This file is NOT part of GNU Emacs.
@@ -96,7 +96,7 @@ idea to pair the native indexing method with caching.
 The hybrid indexing method uses external tools (e.g. git, find,
 etc) to speed up the indexing process.  Still, the files will be
 post-processed by Projectile for sorting/filtering purposes.
-In this sense that approach is a hybrid between native and indexing
+In this sense that approach is a hybrid between native indexing
 and alien indexing.
 
 The alien indexing method optimizes to the limit the speed
@@ -241,14 +241,17 @@ set to 'ggtags', then ggtags will be used for
   :package-version '(projectile . "0.14.0"))
 
 (defcustom projectile-sort-order 'default
-  "The sort order used for a project's files."
+  "The sort order used for a project's files.
+
+Note that files aren't sorted if `projectile-indexing-method'
+is set to 'alien'."
   :group 'projectile
   :type '(radio
-          (const :tag "default" default)
-          (const :tag "recentf" recentf)
-          (const :tag "recently active" recently-active)
-          (const :tag "access time" access-time)
-          (const :tag "modification time" modification-time)))
+          (const :tag "Default (no sorting)" default)
+          (const :tag "Recently opened files" recentf)
+          (const :tag "Recently active buffers, then recently opened files" recently-active)
+          (const :tag "Access time (atime)" access-time)
+          (const :tag "Modification time (mtime)" modification-time)))
 
 (defcustom projectile-verbose t
   "Echo messages that are not errors."
@@ -2309,7 +2312,7 @@ TEST-DIR which specifies the path to the tests relative to the project root."
 
 (defun projectile-cabal-project-p ()
   "Check if a project contains *.cabal files but no stack.yaml file."
-  (and (projectile-verify-file-wildcard "*.cabal")
+  (and (projectile-verify-file-wildcard "?*.cabal")
        (not (projectile-verify-file "stack.yaml"))))
 
 (defun projectile-go-project-p ()
@@ -2511,7 +2514,8 @@ TEST-DIR which specifies the path to the tests relative to the project root."
 ;; Rust
 (projectile-register-project-type 'rust-cargo '("Cargo.toml")
                                   :compile "cargo build"
-                                  :test "cargo test")
+                                  :test "cargo test"
+                                  :run "cargo run")
 
 ;; Racket
 (projectile-register-project-type 'racket '("info.rkt")
@@ -3254,17 +3258,22 @@ to run the replacement."
                     (projectile-prepend-project-name
                      (format "Replace %s with: " old-text))))
          (files (projectile-files-with-string old-text directory)))
-    ;; Adapted from `tags-query-replace' for literal strings (not regexp)
-    (setq tags-loop-scan `(let ,(unless (equal old-text (downcase old-text))
-                                  '((case-fold-search nil)))
-                            (if (search-forward ',old-text nil t)
-                                ;; When we find a match, move back to
-                                ;; the beginning of it so
-                                ;; perform-replace will see it.
-                                (goto-char (match-beginning 0))))
-          tags-loop-operate `(perform-replace ',old-text ',new-text t nil nil
-                                              nil multi-query-replace-map))
-    (tags-loop-continue (or (cons 'list files) t))))
+    (if (version< emacs-version "27")
+        ;; Adapted from `tags-query-replace' for literal strings (not regexp)
+        (progn
+          (setq tags-loop-scan `(let ,(unless (equal old-text (downcase old-text))
+                                        '((case-fold-search nil)))
+                                  (if (search-forward ',old-text nil t)
+                                      ;; When we find a match, move back to
+                                      ;; the beginning of it so
+                                      ;; perform-replace will see it.
+                                      (goto-char (match-beginning 0))))
+                tags-loop-operate `(perform-replace ',old-text ',new-text t nil nil
+                                                    nil multi-query-replace-map))
+          (tags-loop-continue (or (cons 'list files) t)))
+      (progn
+        (fileloop-initialize-replace old-text new-text files 'default)
+        (fileloop-continue)))))
 
 ;;;###autoload
 (defun projectile-replace-regexp (&optional arg)

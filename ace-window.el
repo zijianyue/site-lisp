@@ -162,10 +162,12 @@ Consider changing this if the overlay tends to overlap with other things."
     (?j aw-switch-buffer-in-window "Select Buffer")
     (?n aw-flip-window)
     (?u aw-switch-buffer-other-window "Switch Buffer Other Window")
+    (?e aw-execute-command-other-window "Execute Command Other Window")
     (?F aw-split-window-fair "Split Fair Window")
     (?v aw-split-window-vert "Split Vert Window")
     (?b aw-split-window-horz "Split Horz Window")
     (?o delete-other-windows "Delete Other Windows")
+    (?T aw-transpose-frame "Transpose Frame")
     (?? aw-show-dispatch-help))
   "List of actions for `aw-dispatch-default'.
 Each action is a list of either:
@@ -267,6 +269,10 @@ or
   "Store the read-only empty buffers which had to be modified.
 Modify them back eventually.")
 
+(defvar aw--windows-hscroll nil
+  "List of (window . hscroll-columns) items, each listing a window whose
+  horizontal scroll will be restored upon ace-window action completion.")
+
 (defun aw--done ()
   "Clean up mode line and overlays."
   ;; mode line
@@ -280,7 +286,19 @@ Modify them back eventually.")
       (when (string= (buffer-string) " ")
         (let ((inhibit-read-only t))
           (delete-region (point-min) (point-max))))))
+  (aw--restore-windows-hscroll)
   (setq aw-empty-buffers-list nil))
+
+(defun aw--restore-windows-hscroll ()
+  "Restore horizontal scroll of windows from `aw--windows-hscroll' list."
+  (let (wnd hscroll)
+    (mapc (lambda (wnd-and-hscroll)
+            (setq wnd (car wnd-and-hscroll)
+                  hscroll (cdr wnd-and-hscroll))
+            (when (window-live-p wnd)
+              (set-window-hscroll wnd hscroll)))
+          aw--windows-hscroll))
+  (setq aw--windows-hscroll nil))
 
 (defun aw--overlay-str (wnd pos path)
   "Return the replacement text for an overlay in WND at POS,
@@ -311,39 +329,61 @@ accessible by typing PATH."
              (max 0 (1- (string-width old-str)))
              ?\ ))))))
 
+(defun aw--point-visible-p ()
+  "Return non-nil if point is visible in the selected window.
+Return nil when horizontal scrolling has moved it off screen."
+  (and (>= (- (current-column) (window-hscroll)) 0)
+       (< (- (current-column) (window-hscroll))
+          (window-width))))
+
 (defun aw--lead-overlay (path leaf)
   "Create an overlay using PATH at LEAF.
 LEAF is (PT . WND)."
-  (let ((wnd (cdr leaf)))
+  ;; Properly adds overlay in visible region of most windows except for any one
+  ;; receiving output while this function is executing, since that moves point,
+  ;; potentially shifting the added overlay outside the window's visible region.
+  (let ((wnd (cdr leaf))
+        ;; Prevent temporary movement of point from scrolling any window.
+        (scroll-margin 0))
     (with-selected-window wnd
       (when (= 0 (buffer-size))
         (push (current-buffer) aw-empty-buffers-list)
         (let ((inhibit-read-only t))
           (insert " ")))
-
-      (let* ((pt (car leaf))
+      ;; If point is not visible due to horizontal scrolling of the
+      ;; window, this next expression temporarily scrolls the window
+      ;; right until point is visible, so that the leading-char can be
+      ;; seen when it is inserted.  When ace-window's action finishes,
+      ;; the horizontal scroll is restored by (aw--done).
+      (while (and (not (aw--point-visible-p))
+                  (not (zerop (window-hscroll)))
+                  (progn (push (cons (selected-window) (window-hscroll)) aw--windows-hscroll) t)
+                  (not (zerop (scroll-right)))))
+      (let* ((prev)
+             (vertical-pos (if (eq aw-char-position 'left) -1 0))
+             (horizontal-pos (if (zerop (window-hscroll)) 0 (1+ (window-hscroll))))
+             (pt
+              (save-excursion
+                ;; If leading-char is to be displayed at the top-left, move
+                ;; to the first visible line in the window, otherwise, move
+                ;; to the last visible line.
+                (move-to-window-line vertical-pos)
+                (move-to-column horizontal-pos)
+                ;; Find a nearby point that is not at the end-of-line but
+                ;; is visible so have space for the overlay.
+                (setq prev (1- (point)))
+                (while (and (/= prev (point)) (eolp))
+                  (setq prev (point))
+                  (unless (bobp)
+                    (line-move -1 t)
+                    (move-to-column horizontal-pos)))
+                (recenter vertical-pos)
+                (point)))
              (ol (make-overlay pt (1+ pt) (window-buffer wnd))))
         (overlay-put ol 'display (aw--overlay-str wnd pt path))
         (overlay-put ol 'face 'aw-leading-char-face)
         (overlay-put ol 'window wnd)
-        (push ol avy--overlays-lead))
-
-      (when (eq aw-char-position 'left)
-        (let* ((pt
-                (save-excursion
-                  ;; Move to the start of the last visible line in the buffer.
-                  (move-to-window-line -1)
-                  (move-beginning-of-line nil)
-                  ;; If this line is empty, use the previous line so we
-                  ;; have space for the overlay.
-                  (when (equal (point) (point-max))
-                    (forward-line -1))
-                  (point)))
-               (ol (make-overlay pt (1+ pt) (window-buffer wnd))))
-          (overlay-put ol 'display (aw--overlay-str wnd pt path))
-          (overlay-put ol 'face 'aw-leading-char-face)
-          (overlay-put ol 'window wnd)
-          (push ol avy--overlays-lead))))))
+        (push ol avy--overlays-lead)))))
 
 (defun aw--make-backgrounds (wnd-list)
   "Create a dim background overlay for each window on WND-LIST."
@@ -430,7 +470,7 @@ The new frame is set to the same size as the previous frame, offset by
               (avy-mouse-event-window char)))
         ((= char (aref (kbd "C-g") 0))
          (throw 'done 'exit))
-        ((= char aw-make-frame-char)
+        ((and aw-make-frame-char (= char aw-make-frame-char))
          ;; Make a new frame and perform any action on its window.
          (let ((start-win (selected-window))
                (end-win (frame-selected-window (aw-make-frame))))
@@ -541,6 +581,10 @@ Amend MODE-LINE to the mode line for the duration of the selection."
   (aw-select " Ace - Delete Other Windows"
              #'delete-other-windows))
 
+(defun aw-transpose-frame (w)
+  "Select any window on frame and `tranpose-frame'."
+  (transpose-frame (window-frame w)))
+
 (define-obsolete-function-alias
     'ace-maximize-window 'ace-delete-other-windows "0.10.0")
 
@@ -559,6 +603,7 @@ selected window).
 Prefixed with two \\[universal-argument]'s, deletes the selected
 window."
   (interactive "p")
+  (setq avy-current-path "")
   (cl-case arg
     (0
      (let ((aw-ignore-on (not aw-ignore-on)))
@@ -583,12 +628,12 @@ window."
 This is determined by their respective window coordinates.
 Windows are numbered top down, left to right."
   (let* ((f1 (window-frame wnd1))
-	 (f2 (window-frame wnd2))
-	 (e1 (window-edges wnd1))
-	 (e2 (window-edges wnd2))
-	 (p1 (frame-position f1))
-	 (p2 (frame-position f2))
-	 (nl (or (null (car p1)) (null (car p2)))))
+         (f2 (window-frame wnd2))
+         (e1 (window-edges wnd1))
+         (e2 (window-edges wnd2))
+         (p1 (frame-position f1))
+         (p2 (frame-position f2))
+         (nl (or (null (car p1)) (null (car p2)))))
     (cond ((and (not nl) (< (car p1) (car p2)))
            (not aw-reverse-frame-list))
           ((and (not nl) (> (car p1) (car p2)))
@@ -761,6 +806,16 @@ Modify `aw-fair-aspect-ratio' to tweak behavior."
   (aw-switch-to-window window)
   (unwind-protect
       (aw--switch-buffer)
+    (aw-flip-window)))
+
+(defun aw-execute-command-other-window (window)
+  "Execute a command in WINDOW."
+  (aw-switch-to-window window)
+  (unwind-protect
+      (funcall
+       (key-binding
+        (read-key-sequence
+         "Enter key sequence: ")))
     (aw-flip-window)))
 
 (defun aw--face-rel-height ()

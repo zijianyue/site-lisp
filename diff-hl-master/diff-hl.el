@@ -1,11 +1,11 @@
 ;;; diff-hl.el --- Highlight uncommitted changes using VC -*- lexical-binding: t -*-
 
-;; Copyright (C) 2012-2016  Free Software Foundation, Inc.
+;; Copyright (C) 2012-2019  Free Software Foundation, Inc.
 
 ;; Author:   Dmitry Gutov <dgutov@yandex.ru>
 ;; URL:      https://github.com/dgutov/diff-hl
 ;; Keywords: vc, diff
-;; Version:  1.8.4
+;; Version:  1.8.6
 ;; Package-Requires: ((cl-lib "0.2") (emacs "24.3"))
 
 ;; This file is part of GNU Emacs.
@@ -127,6 +127,15 @@
            (set-default var value)
            (when on (global-diff-hl-mode 1)))))
 
+(defcustom diff-hl-highlight-revert-hunk-function
+  #'diff-hl-revert-highlight-first-column
+  "Function to highlight the current hunk in `diff-hl-revert-hunk'.
+The function is called at the beginning of the hunk and passed
+the end position as its only argument."
+  :type '(choice (const :tag "Do nothing" ignore)
+                 (const :tag "Highlight the first column"
+                        diff-hl-revert-highlight-first-column)))
+
 (defvar diff-hl-reference-revision nil
   "Revision to diff against.  nil means the most recent one.")
 
@@ -177,6 +186,10 @@
     (unless (fringe-bitmap-p 'diff-hl-bmp-empty)
       (diff-hl-define-bitmaps)
       (define-fringe-bitmap 'diff-hl-bmp-empty [0] 1 1 'center))))
+
+(defun diff-hl-maybe-redefine-bitmaps ()
+  (when (window-system)
+    (diff-hl-define-bitmaps)))
 
 (defvar diff-hl-spec-cache (make-hash-table :test 'equal))
 
@@ -236,10 +249,20 @@
 
 (defun diff-hl-changes-buffer (file backend)
   (let ((buf-name " *diff-hl* "))
-    (diff-hl-with-diff-switches
-     (vc-call-backend backend 'diff (list file)
-                      diff-hl-reference-revision nil
-                      buf-name))
+    (condition-case err
+        (diff-hl-with-diff-switches
+         ;; FIXME: To diff against the staging area, call 'git diff-files -p'.
+         (vc-call-backend backend 'diff (list file)
+                          diff-hl-reference-revision nil
+                          buf-name))
+      (error
+       (when (string-match-p "\\`Failed (status 128)" (error-message-string err))
+         (diff-hl-with-diff-switches
+          ;; FIXME: To diff against the staging area, call 'git diff-files -p'.
+          (vc-call-backend backend 'diff (list file)
+                           "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+                           nil
+                           buf-name)))))
     buf-name))
 
 (defun diff-hl-changes ()
@@ -380,53 +403,69 @@ in the source file, or the last line of the hunk above it."
                 (unless (looking-at "^-")
                   (cl-decf to-go))))))))))
 
+(defface diff-hl-reverted-hunk-highlight
+  '((default :inverse-video t))
+  "Face used to highlight the first column of the hunk to be reverted.")
+
+(defun diff-hl-revert-highlight-first-column (end)
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (while (< (point) end)
+        (font-lock-prepend-text-property (point) (1+ (point)) 'font-lock-face
+                                         'diff-hl-reverted-hunk-highlight)
+        (forward-line 1)))))
+
 (defun diff-hl-revert-hunk ()
   "Revert the diff hunk with changes at or above the point."
   (interactive)
-  (vc-buffer-sync)
-  (let ((diff-buffer (generate-new-buffer-name "*diff-hl*"))
-        (buffer (current-buffer))
-        (line (save-excursion
-                (unless (diff-hl-hunk-overlay-at (point))
-                  (diff-hl-previous-hunk))
-                (line-number-at-pos)))
-        (fileset (vc-deduce-fileset)))
-    (unwind-protect
-        (progn
-          (vc-diff-internal nil fileset diff-hl-reference-revision nil
-                            nil diff-buffer)
-          (vc-exec-after
-           `(let (beg-line end-line)
-              (when (eobp)
-                (with-current-buffer ,buffer (diff-hl-remove-overlays))
-                (user-error "Buffer is up-to-date"))
-              (let (diff-auto-refine-mode)
-                (diff-hl-diff-skip-to ,line))
-              (save-excursion
-                (while (looking-at "[-+]") (forward-line 1))
-                (setq end-line (line-number-at-pos (point)))
-                (unless (eobp) (diff-split-hunk)))
-              (unless (looking-at "[-+]") (forward-line -1))
-              (while (looking-at "[-+]") (forward-line -1))
-              (setq beg-line (line-number-at-pos (point)))
-              (unless (looking-at "@")
-                (forward-line 1)
-                (diff-split-hunk))
-              (let ((wbh (window-body-height)))
-                (if (>= wbh (- end-line beg-line))
-                    (recenter (/ (+ wbh (- beg-line end-line) 2) 2))
-                  (recenter 1)))
-              (when diff-auto-refine-mode
-                (diff-refine-hunk))
-              (unless (yes-or-no-p (format "Revert current hunk in %s? "
-                                           ,(cl-caadr fileset)))
-                (user-error "Revert canceled"))
-              (let ((diff-advance-after-apply-hunk nil))
-                (diff-apply-hunk t))
-              (with-current-buffer ,buffer
-                (save-buffer))
-              (message "Hunk reverted"))))
-      (quit-windows-on diff-buffer t))))
+  (save-restriction
+    (widen)
+    (vc-buffer-sync)
+    (let ((diff-buffer (generate-new-buffer-name "*diff-hl*"))
+          (buffer (current-buffer))
+          (line (save-excursion
+                  (unless (diff-hl-hunk-overlay-at (point))
+                    (diff-hl-previous-hunk))
+                  (line-number-at-pos)))
+          (fileset (vc-deduce-fileset)))
+      (unwind-protect
+          (progn
+            (vc-diff-internal nil fileset diff-hl-reference-revision nil
+                              nil diff-buffer)
+            (vc-exec-after
+             `(let (beg-line end-line m-end)
+                (when (eobp)
+                  (with-current-buffer ,buffer (diff-hl-remove-overlays))
+                  (user-error "Buffer is up-to-date"))
+                (let (diff-auto-refine-mode)
+                  (diff-hl-diff-skip-to ,line))
+                (save-excursion
+                  (while (looking-at "[-+]") (forward-line 1))
+                  (setq end-line (line-number-at-pos (point)))
+                  (setq m-end (point-marker))
+                  (unless (eobp) (diff-split-hunk)))
+                (unless (looking-at "[-+]") (forward-line -1))
+                (while (looking-at "[-+]") (forward-line -1))
+                (setq beg-line (line-number-at-pos (point)))
+                (unless (looking-at "@")
+                  (forward-line 1)
+                  (diff-split-hunk))
+                (funcall diff-hl-highlight-revert-hunk-function m-end)
+                (let ((wbh (window-body-height)))
+                  (if (>= wbh (- end-line beg-line))
+                      (recenter (/ (+ wbh (- beg-line end-line) 2) 2))
+                    (recenter 1)))
+                (when diff-auto-refine-mode
+                  (diff-refine-hunk))
+                (unless (yes-or-no-p (format "Revert current hunk in %s? "
+                                             ,(cl-caadr fileset)))
+                  (user-error "Revert canceled"))
+                (let ((diff-advance-after-apply-hunk nil))
+                  (diff-apply-hunk t))
+                (with-current-buffer ,buffer
+                  (save-buffer))
+                (message "Hunk reverted"))))
+        (quit-windows-on diff-buffer t)))))
 
 (defun diff-hl-hunk-overlay-at (pos)
   (cl-loop for o in (overlays-in pos (1+ pos))
@@ -508,7 +547,7 @@ The value of this variable is a mode line template as in
         ;; instead, but only when they dosn't call `revert-buffer':
         (add-hook 'magit-not-reverted-hook 'diff-hl-update nil t)
         (add-hook 'auto-revert-mode-hook 'diff-hl-update nil t)
-        (add-hook 'text-scale-mode-hook 'diff-hl-define-bitmaps nil t))
+        (add-hook 'text-scale-mode-hook 'diff-hl-maybe-redefine-bitmaps nil t))
     (remove-hook 'after-save-hook 'diff-hl-update t)
     (remove-hook 'after-change-functions 'diff-hl-edit t)
     (remove-hook 'find-file-hook 'diff-hl-update t)
@@ -517,7 +556,7 @@ The value of this variable is a mode line template as in
     (remove-hook 'magit-revert-buffer-hook 'diff-hl-update t)
     (remove-hook 'magit-not-reverted-hook 'diff-hl-update t)
     (remove-hook 'auto-revert-mode-hook 'diff-hl-update t)
-    (remove-hook 'text-scale-mode-hook 'diff-hl-define-bitmaps t)
+    (remove-hook 'text-scale-mode-hook 'diff-hl-maybe-redefine-bitmaps t)
     (diff-hl-remove-overlays)))
 
 (when (require 'smartrep nil t)
