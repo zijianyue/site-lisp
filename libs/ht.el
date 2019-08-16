@@ -228,7 +228,8 @@ inverse of `ht<-alist'.  The following is not guaranteed:
 
 (defun ht-contains? (table key)
   "Return 't if TABLE contains KEY."
-  (not (eq (ht-get table key 'ht--not-found) 'ht--not-found)))
+  (let ((not-found-symbol (make-symbol "ht--not-found")))
+    (not (eq (ht-get table key not-found-symbol) not-found-symbol))))
 
 (defalias 'ht-contains-p 'ht-contains?)
 
@@ -239,6 +240,8 @@ inverse of `ht<-alist'.  The following is not guaranteed:
 (defsubst ht-empty? (table)
   "Return true if the actual number of entries in TABLE is zero."
   (zerop (ht-size table)))
+
+(defalias 'ht-empty-p 'ht-empty?)
 
 (defun ht-select (function table)
   "Return a hash table containing all entries in TABLE for which
