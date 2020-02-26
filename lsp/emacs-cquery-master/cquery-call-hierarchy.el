@@ -90,7 +90,7 @@
 
 (defun cquery-call-hierarchy--request-init (callee)
   "."
-  (cquery--cquery-buffer-check)
+  ;; (cquery--cquery-buffer-check)
   (lsp--send-request
    (lsp--make-request "$cquery/callHierarchy"
                       `(:textDocument (:uri ,(concat lsp--uri-file-prefix buffer-file-name))
@@ -119,7 +119,7 @@
 (defun cquery-call-hierarchy (callee)
   (interactive "P")
   (when-lsp-workspace (cquery--get-lsp-workspace)
-    (cquery--cquery-buffer-check)
+    ;; (cquery--cquery-buffer-check)
     (setq callee (if callee t :json-false))
     (cquery-tree--open
      (make-cquery-tree-client

@@ -1151,7 +1151,7 @@ buffer and sets the point to a tag, corresponding the line."
   (tag-list-stop-timer)
   (add-hook 'after-save-hook 'tag-list-update-after-save-safe)
   (setq tag-list--timer
-        (run-with-idle-timer 1 t #'tag-list-update-safe)))
+        (run-with-idle-timer 0.5 t #'tag-list-update-safe)))
 
 (defun tag-list-stop-timer ()
   (when tag-list--timer

@@ -212,9 +212,8 @@ different window, according to `ag-reuse-window'."
          (mapcar (lambda (item) (list "--ignore" item)) ignores)))
 
 (cl-defun ag/search (string directory
-                            &key (regexp nil) (file-regex nil) (file-type nil) (files '(".")))
+                            &key (regexp nil) (file-regex nil) (file-type nil))
   "Run ag searching for the STRING given in DIRECTORY.
-If `files` is passed, tell ag to look only on those files.
 If REGEXP is non-nil, treat STRING as a regular expression."
   (let ((default-directory (file-name-as-directory directory))
         (arguments ag-arguments)
@@ -249,7 +248,7 @@ If REGEXP is non-nil, treat STRING as a regular expression."
       (error "No such directory %s" default-directory))
     (let ((command-string
            (mapconcat #'shell-quote-argument
-                      (append (list ag-executable) arguments (append `(,string) files))
+                      (append (list ag-executable) arguments (list string "."))
                       " ")))
       ;; If we're called with a prefix, let the user modify the command before
       ;; running it. Typically this means they want to pass additional arguments.

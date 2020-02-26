@@ -4,7 +4,7 @@
 
 ;; Author: Fritz Stelzer <brotzeitmacher@gmail.com>
 ;; URL: https://github.com/brotzeit/helm-xref
-;; Version: 0.5
+;; Version: 0.4
 ;; Package-Requires: ((emacs "25.1") (helm "1.9.4"))
 
 ;;; License:
@@ -121,11 +121,11 @@
    ":"
    summary))
 
-(defun helm-xref-goto-xref-item (item func)
-  "Set buffer and point according to xref-item ITEM.
+(defun helm-xref-goto-xref-item (xref-item func)
+  "Set buffer and point according to xref-item XREF-ITEM.
 
 Use FUNC to display buffer."
-  (with-slots (summary location) item
+  (with-slots (summary location) xref-item
     (let* ((marker (xref-location-marker location))
            (buf (marker-buffer marker))
            (offset (marker-position marker)))
@@ -136,12 +136,13 @@ Use FUNC to display buffer."
 (defun helm-xref-source ()
   "Return a `helm' source for xref results."
   (helm-build-sync-source "Helm Xref"
-    :candidates helm-xref-alist
-    :persistent-action (lambda (item)
+    :candidates (lambda ()
+                  helm-xref-alist)
+    :persistent-action (lambda (xref-item)
                          (helm-xref-goto-xref-item
-                          item '(lambda (buf) (helm-highlight-current-line))))
-    :action '(("Switch to buffer" . (lambda (item) (helm-xref-goto-xref-item item 'switch-to-buffer)))
-              ("Other window" . (lambda (item) (helm-xref-goto-xref-item item 'switch-to-buffer-other-window))))
+                          xref-item '(lambda (buf) (helm-highlight-current-line))))
+    :action '(("Switch to buffer" . (lambda (xref-item) (helm-xref-goto-xref-item xref-item 'switch-to-buffer)))
+              ("Other window" . (lambda (xref-item) (helm-xref-goto-xref-item xref-item 'switch-to-buffer-other-window))))
     :candidate-number-limit 9999))
 
 (defun helm-xref-show-xrefs (xrefs _alist)
@@ -164,23 +165,11 @@ Needs to be set the value of `xref-show-xrefs-function'."
         :truncate-lines t
         :buffer "*helm-xref*"))
 
-(defun helm-xref-show-defs-27 (fetcher alist)
-  "Function to display list of definitions."
-  (let ((xrefs (funcall fetcher)))
-    (cond
-     ((not (cdr xrefs))
-      (xref-pop-to-location (car xrefs)
-                            (assoc-default 'display-action alist)))
-     (t
-      (helm-xref-show-xrefs-27 fetcher
-                               (cons (cons 'fetched-xrefs xrefs)
-                                     alist))))))
-
 (if (< emacs-major-version 27)
     (setq xref-show-xrefs-function 'helm-xref-show-xrefs)
   (progn
     (setq xref-show-xrefs-function 'helm-xref-show-xrefs-27)
-    (setq xref-show-definitions-function 'helm-xref-show-defs-27)))
+    (setq xref-show-definitions-function 'helm-xref-show-xrefs-27)))
 
 (provide 'helm-xref)
 ;;; helm-xref.el ends here

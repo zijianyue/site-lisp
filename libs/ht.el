@@ -29,7 +29,6 @@
 ;;; Code:
 
 (require 'dash)
-(require 'gv)
 
 (defmacro ht (&rest pairs)
   "Create a hash table with the key-value pairs given.
@@ -95,26 +94,13 @@ user-supplied test created via `define-hash-table-test'."
 If KEY isn't present, return DEFAULT (nil if not specified)."
   (gethash key table default))
 
-(gv-define-setter ht-get (value table key) `(ht-set! ,table ,key ,value))
-
 (defun ht-get* (table &rest keys)
   "Look up KEYS in nested hash tables, starting with TABLE.
 The lookup for each key should return another hash table, except
 for the final key, which may return any value."
   (if (cdr keys)
       (apply #'ht-get* (ht-get table (car keys)) (cdr keys))
-    (if keys
-        (ht-get table (car keys))
-      table)))
-
-(gv-define-setter ht-get* (value table &rest keys)
-  `(if (cdr ',keys)
-       (let* ((first-key (car ',keys))
-              (last-key (-last-item ',keys))
-              (butlast-key (butlast (cdr ',keys)))
-              (h (apply #'ht-get* (ht-get ,table first-key) butlast-key)))
-         (ht-set! h last-key ,value))
-     (ht-set! ,table (car ',keys) ,value)))
+    (ht-get table (car keys))))
 
 (defun ht-update! (table from-table)
   "Update TABLE according to every key-value pair in FROM-TABLE."
@@ -228,8 +214,7 @@ inverse of `ht<-alist'.  The following is not guaranteed:
 
 (defun ht-contains? (table key)
   "Return 't if TABLE contains KEY."
-  (let ((not-found-symbol (make-symbol "ht--not-found")))
-    (not (eq (ht-get table key not-found-symbol) not-found-symbol))))
+  (not (eq (ht-get table key 'ht--not-found) 'ht--not-found)))
 
 (defalias 'ht-contains-p 'ht-contains?)
 
@@ -240,8 +225,6 @@ inverse of `ht<-alist'.  The following is not guaranteed:
 (defsubst ht-empty? (table)
   "Return true if the actual number of entries in TABLE is zero."
   (zerop (ht-size table)))
-
-(defalias 'ht-empty-p 'ht-empty?)
 
 (defun ht-select (function table)
   "Return a hash table containing all entries in TABLE for which

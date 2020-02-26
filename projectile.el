@@ -1,11 +1,11 @@
 ;;; projectile.el --- Manage and navigate projects in Emacs easily -*- lexical-binding: t -*-
 
-;; Copyright © 2011-2019 Bozhidar Batsov <bozhidar@batsov.com>
+;; Copyright © 2011-2020 Bozhidar Batsov <bozhidar@batsov.com>
 
 ;; Author: Bozhidar Batsov <bozhidar@batsov.com>
 ;; URL: https://github.com/bbatsov/projectile
 ;; Keywords: project, convenience
-;; Version: 2.1.0-snapshot
+;; Version: 2.2.0-snapshot
 ;; Package-Requires: ((emacs "25.1") (pkg-info "0.4"))
 
 ;; This file is NOT part of GNU Emacs.
@@ -55,9 +55,6 @@
   (defvar eshell-buffer-name)
   (defvar explicit-shell-file-name))
 
-(declare-function ggtags-ensure-project "ggtags")
-(declare-function ggtags-update-tags "ggtags")
-(declare-function pkg-info-version-info "pkg-info")
 (declare-function tags-completion-table "etags")
 (declare-function make-term "term")
 (declare-function term-mode "term")
@@ -65,8 +62,17 @@
 (declare-function eshell-search-path "esh-ext")
 (declare-function vc-dir "vc-dir")
 (declare-function vc-dir-busy "vc-dir")
-(declare-function ripgrep-regexp "ripgrep")
 (declare-function string-trim "subr-x")
+(declare-function fileloop-continue "fileloop")
+(declare-function fileloop-initialize-replace "fileloop")
+
+(declare-function ggtags-ensure-project "ext:ggtags")
+(declare-function ggtags-update-tags "ext:ggtags")
+(declare-function pkg-info-version-info "ext:pkg-info")
+(declare-function ripgrep-regexp "ext:ripgrep")
+(declare-function vterm "ext:vterm")
+(declare-function vterm-send-return "ext:vterm")
+(declare-function vterm-send-string "ext:vterm")
 
 (defvar grep-files-aliases)
 (defvar grep-find-ignored-directories)
@@ -298,6 +304,7 @@ If variable `projectile-project-name' is non-nil, this function will not be used
     "Gemfile"            ; Bundler file
     "requirements.txt"   ; Pip file
     "setup.py"           ; Setuptools file
+    "pyproject.toml"     ; Python project file
     "tox.ini"            ; Tox file
     "composer.json"      ; Composer project file
     "Cargo.toml"         ; Cargo project file
@@ -768,6 +775,13 @@ just return nil."
   "Get the symbol at point and strip its properties."
   (substring-no-properties (or (thing-at-point 'symbol) "")))
 
+(defun projectile-generate-process-name (process make-new)
+  "Infer the buffer name for PROCESS or generate a new one if MAKE-NEW is true."
+  (let* ((project (projectile-ensure-project (projectile-project-root)))
+         (base-name (format "*%s %s*" process (projectile-project-name project))))
+    (if make-new
+        (generate-new-buffer-name base-name)
+      base-name)))
 
 
 ;;; Serialization
@@ -1167,7 +1181,7 @@ Files are returned as relative paths to DIRECTORY."
 The function calls itself recursively until all sub-directories
 have been indexed.  The PROGRESS-REPORTER is updated while the
 function is executing."
-  (apply 'append
+  (apply #'append
          (mapcar
           (lambda (f)
             (unless (or (and patterns (projectile-ignored-rel-p f directory patterns))
@@ -1360,7 +1374,7 @@ otherwise operates relative to project root."
     (let (result)
       (dolist (dir directories result)
         (setq result (append result
-                             (projectile-get-repo-ignored-directory project vcs dir))))
+                             (projectile-get-repo-ignored-directory project dir vcs))))
       result)))
 
 (defun projectile-add-unignored (project vcs files)
@@ -2664,7 +2678,10 @@ test/impl/other files as below:
                                   :test-suffix "_test")
 (projectile-register-project-type 'bloop '(".bloop")
                                   :compile "bloop compile root"
-                                  :test "bloop test --propagate --reporter scalac root")
+                                  :test "bloop test --propagate --reporter scalac root"
+                                  :src-dir "src/main/"
+                                  :test-dir "src/test/"
+                                  :test-suffix "Spec")
 ;; Ruby
 (projectile-register-project-type 'ruby-rspec '("Gemfile" "lib" "spec")
                                   :compile "bundle exec rake"
@@ -2934,7 +2951,7 @@ Fallback to DEFAULT-VALUE for missing attributes."
   (let ((grouped-candidates (projectile-group-file-candidates file candidates)))
     (if (= (length (car grouped-candidates)) 2)
         (list (car (last (car grouped-candidates))))
-      (apply 'append (mapcar 'cdr grouped-candidates)))))
+      (apply #'append (mapcar #'cdr grouped-candidates)))))
 
 (defun projectile--impl-to-test-predicate (impl-file)
   "Return a predicate, which returns t for any test files for IMPL-FILE."
@@ -3059,7 +3076,7 @@ which it shares its arglist."
                  ;; we should use shell-quote-argument here
                  " -path "
                  (mapconcat
-                  'identity
+                  #'identity
                   (delq nil (mapcar
                              #'(lambda (ignore)
                                  (cond ((stringp ignore)
@@ -3196,7 +3213,13 @@ With REGEXP given, don't query the user for a regexp."
               (projectile-grep-find-unignored-patterns (projectile-patterns-to-ensure)))
           (grep-compute-defaults)
           (cl-letf (((symbol-function 'rgrep-default-command) #'projectile-rgrep-default-command))
-            (rgrep search-regexp (or files "* .*") root-dir)))))
+            (rgrep search-regexp (or files "* .*") root-dir)
+            (when (get-buffer "*grep*")
+              ;; When grep is using a global *grep* buffer rename it to be
+              ;; scoped to the current root to allow multiple concurrent grep
+              ;; operations, one per root
+              (with-current-buffer "*grep*"
+                (rename-buffer (concat "*grep <" root-dir ">*"))))))))
     (run-hooks 'projectile-grep-finished-hook)))
 
 ;;;###autoload
@@ -3333,49 +3356,62 @@ regular expression."
   "Invoke `execute-extended-command' in the project's root."
   (interactive)
   (projectile-with-default-dir (projectile-ensure-project (projectile-project-root))
-    (call-interactively 'execute-extended-command)))
+    (call-interactively #'execute-extended-command)))
 
 ;;;###autoload
 (defun projectile-run-shell-command-in-root ()
   "Invoke `shell-command' in the project's root."
   (interactive)
   (projectile-with-default-dir (projectile-ensure-project (projectile-project-root))
-    (call-interactively 'shell-command)))
+    (call-interactively #'shell-command)))
 
 ;;;###autoload
 (defun projectile-run-async-shell-command-in-root ()
   "Invoke `async-shell-command' in the project's root."
   (interactive)
   (projectile-with-default-dir (projectile-ensure-project (projectile-project-root))
-    (call-interactively 'async-shell-command)))
+    (call-interactively #'async-shell-command)))
 
 ;;;###autoload
-(defun projectile-run-shell ()
+(defun projectile-run-gdb ()
+  "Invoke `gdb' in the project's root."
+  (interactive)
+  (projectile-with-default-dir (projectile-ensure-project (projectile-project-root))
+    (call-interactively 'gdb)))
+
+;;;###autoload
+(defun projectile-run-shell (arg)
   "Invoke `shell' in the project's root.
 
-Switch to the project specific shell buffer if it already exists."
-  (interactive)
+Switch to the project specific shell buffer if it already exists.
+
+Use a prefix argument ARG to indicate creation of a new process instead."
+  (interactive "P")
   (projectile-with-default-dir (projectile-ensure-project (projectile-project-root))
-    (shell (concat "*shell " (projectile-project-name) "*"))))
+    (shell (projectile-generate-process-name "shell" arg))))
 
 ;;;###autoload
-(defun projectile-run-eshell ()
+(defun projectile-run-eshell (arg)
   "Invoke `eshell' in the project's root.
 
-Switch to the project specific eshell buffer if it already exists."
-  (interactive)
+Switch to the project specific eshell buffer if it already exists.
+
+Use a prefix argument ARG to indicate creation of a new process instead."
+  (interactive "P")
   (projectile-with-default-dir (projectile-ensure-project (projectile-project-root))
-    (let ((eshell-buffer-name (concat "*eshell " (projectile-project-name) "*")))
+    (let ((eshell-buffer-name (projectile-generate-process-name "eshell" arg)))
       (eshell))))
 
 ;;;###autoload
-(defun projectile-run-ielm ()
+(defun projectile-run-ielm (arg)
   "Invoke `ielm' in the project's root.
 
-Switch to the project specific ielm buffer if it already exists."
-  (interactive)
+Switch to the project specific ielm buffer if it already exists.
+
+Use a prefix argument ARG to indicate creation of a new process instead."
+  (interactive "P")
   (let* ((project (projectile-ensure-project (projectile-project-root)))
-         (ielm-buffer-name (format "*ielm %s*" (projectile-project-name project))))
+         (ielm-buffer-name (projectile-generate-process-name "ielm" arg)))
     (if (get-buffer ielm-buffer-name)
         (switch-to-buffer ielm-buffer-name)
       (projectile-with-default-dir project
@@ -3384,26 +3420,44 @@ Switch to the project specific ielm buffer if it already exists."
       (rename-buffer ielm-buffer-name))))
 
 ;;;###autoload
-(defun projectile-run-term (program)
+(defun projectile-run-term (arg)
   "Invoke `term' in the project's root.
 
-Switch to the project specific term buffer if it already exists."
-  (interactive (list nil))
-  (let* ((project (projectile-ensure-project (projectile-project-root)))
-         (term (concat "term " (projectile-project-name project)))
-         (buffer (concat "*" term "*")))
-    (unless (get-buffer buffer)
+Switch to the project specific term buffer if it already exists.
+
+Use a prefix argument ARG to indicate creation of a new process instead."
+  (interactive "P")
+  (let ((project (projectile-ensure-project (projectile-project-root)))
+        (buffer-name (projectile-generate-process-name "term" arg))
+        (default-program (or explicit-shell-file-name
+                             (getenv "ESHELL")
+                             (getenv "SHELL")
+                             "/bin/sh")))
+    (unless (get-buffer buffer-name)
       (require 'term)
-      (let ((program (or program
-                         (read-from-minibuffer "Run program: "
-                                               (or explicit-shell-file-name
-                                                   (getenv "ESHELL")
-                                                   (getenv "SHELL")
-                                                   "/bin/sh")))))
+      (let ((program (read-from-minibuffer "Run program: " default-program)))
         (projectile-with-default-dir project
-          (set-buffer (make-term term program))
+          (set-buffer (term-ansi-make-term buffer-name program))
           (term-mode)
           (term-char-mode))))
+    (switch-to-buffer buffer-name)))
+
+;;;###autoload
+(defun projectile-run-vterm (&optional arg)
+  "Invoke `vterm' in the project's root.
+
+Switch to the project specific term buffer if it already exists.
+
+Use a prefix argument ARG to indicate creation of a new process instead."
+  (interactive "P")
+  (let* ((project (projectile-ensure-project (projectile-project-root)))
+         (buffer (projectile-generate-process-name "vterm" arg)))
+    (unless (buffer-live-p (get-buffer buffer))
+      (unless (require 'vterm nil 'noerror)
+        (error "Package 'vterm' is not available"))
+      (vterm buffer)
+      (vterm-send-string (concat "cd " project))
+      (vterm-send-return))
     (switch-to-buffer buffer)))
 
 (defun projectile-files-in-project-directory (directory)
@@ -3479,22 +3533,23 @@ to run the replacement."
                     (projectile-prepend-project-name
                      (format "Replace %s with: " old-text))))
          (files (projectile-files-with-string old-text directory)))
-    (if (version< emacs-version "27")
-        ;; Adapted from `tags-query-replace' for literal strings (not regexp)
-        (progn
-          (setq tags-loop-scan `(let ,(unless (equal old-text (downcase old-text))
-                                        '((case-fold-search nil)))
-                                  (if (search-forward ',old-text nil t)
-                                      ;; When we find a match, move back to
-                                      ;; the beginning of it so
-                                      ;; perform-replace will see it.
-                                      (goto-char (match-beginning 0))))
-                tags-loop-operate `(perform-replace ',old-text ',new-text t nil nil
-                                                    nil multi-query-replace-map))
-          (tags-loop-continue (or (cons 'list files) t)))
-      (progn
-        (fileloop-initialize-replace old-text new-text files 'default)
-        (fileloop-continue)))))
+    (if (fboundp #'fileloop-continue)
+        ;; Emacs 27+
+        (progn (fileloop-initialize-replace old-text new-text files 'default)
+               (fileloop-continue))
+      ;; Emacs 25 and 26
+      ;;
+      ;; Adapted from `tags-query-replace' for literal strings (not regexp)
+      (setq tags-loop-scan `(let ,(unless (equal old-text (downcase old-text))
+                                    '((case-fold-search nil)))
+                              (if (search-forward ',old-text nil t)
+                                  ;; When we find a match, move back to
+                                  ;; the beginning of it so
+                                  ;; perform-replace will see it.
+                                  (goto-char (match-beginning 0))))
+            tags-loop-operate `(perform-replace ',old-text ',new-text t nil nil
+                                                nil multi-query-replace-map))
+      (tags-loop-continue (or (cons 'list files) t)))))
 
 ;;;###autoload
 (defun projectile-replace-regexp (&optional arg)
@@ -3691,15 +3746,13 @@ resolves to function `funcall's.  Return value of function MUST
 be string to be executed as command."
   (let ((command (plist-get (alist-get project-type projectile-project-types) command-type)))
     (cond
+     ((not command) nil)
      ((stringp command) command)
      ((functionp command)
       (if (fboundp command)
           (funcall (symbol-function command))))
-     ((and (not command) (eq command-type 'compilation-dir))
-      ;; `compilation-dir' is special in that it is used as a fallback for the root
-      nil)
      (t
-      (user-error "The value for: %s in project-type: %s was neither a function nor a string." command-type project-type)))))
+      (error "The value for: %s in project-type: %s was neither a function nor a string" command-type project-type)))))
 
 (defun projectile-default-configure-command (project-type)
   "Retrieve default configure command for PROJECT-TYPE."
@@ -4078,7 +4131,7 @@ This command will first prompt for the directory the file is in."
         ;; target directory is in a project
         (let ((file (projectile-completing-read "Find file: "
                                                 (projectile-dir-files directory))))
-          (find-file (expand-file-name file (projectile-project-root)))
+          (find-file (expand-file-name file directory))
           (run-hooks 'projectile-find-file-hook))
       ;; target directory is not in a project
       (projectile-find-file))))
@@ -4166,6 +4219,7 @@ See `projectile--cleanup-known-projects'."
       (and (functionp projectile-ignored-project-function)
            (funcall projectile-ignored-project-function project-root))))
 
+;;;###autoload
 (defun projectile-add-known-project (project-root)
   "Add PROJECT-ROOT to the list of known projects."
   (interactive (list (read-directory-name "Add to known projects: ")))
@@ -4339,7 +4393,7 @@ is chosen."
 
   (def-projectile-commander-method ?a
     "Run ag on project."
-    (call-interactively 'projectile-ag))
+    (call-interactively #'projectile-ag))
 
   (def-projectile-commander-method ?s
     "Switch project."
@@ -4458,7 +4512,7 @@ If the current buffer does not belong to a project, call `previous-buffer'."
   "Prompt for a variable and return its name."
   (completing-read "Variable: "
                    obarray
-                   '(lambda (v)
+                   (lambda (v)
                       (and (boundp v) (not (keywordp v))))
                    t))
 
@@ -4577,6 +4631,8 @@ thing shown in the mode line otherwise."
     (define-key map (kbd "x i") #'projectile-run-ielm)
     (define-key map (kbd "x t") #'projectile-run-term)
     (define-key map (kbd "x s") #'projectile-run-shell)
+    (define-key map (kbd "x g") #'projectile-run-gdb)
+    (define-key map (kbd "x v") #'projectile-run-vterm)
     (define-key map (kbd "z") #'projectile-cache-current-file)
     (define-key map (kbd "<left>") #'projectile-previous-project-buffer)
     (define-key map (kbd "<right>") #'projectile-next-project-buffer)
@@ -4619,6 +4675,8 @@ thing shown in the mode line otherwise."
         ["Search in project (ag)" projectile-ag]
         ["Replace in project" projectile-replace]
         ["Multi-occur in project" projectile-multi-occur]
+        "--"
+        ["Run GDB" projectile-run-gdb]
         "--"
         ["Run shell" projectile-run-shell]
         ["Run eshell" projectile-run-eshell]

@@ -235,7 +235,15 @@ TEXT with.  PATH is a file name to write to."
   "Write binary DATA to PATH.
 
 DATA is a unibyte string.  PATH is a file name to write to."
-  (f--write-bytes data path nil))
+  (f--destructive path
+    (unless (f-unibyte-string-p data)
+      (signal 'wrong-type-argument (list 'f-unibyte-string-p data)))
+    (let ((file-coding-system-alist nil)
+          (coding-system-for-write 'binary))
+      (with-temp-file path
+        (setq buffer-file-coding-system 'binary)
+        (set-buffer-multibyte nil)
+        (insert data)))))
 
 (defalias 'f-append 'f-append-text)
 (defun f-append-text (text coding path)
@@ -248,19 +256,11 @@ If PATH does not exist, it is created."
   "Append binary DATA to PATH.
 
 If PATH does not exist, it is created."
-  (f--write-bytes data path :append))
-
-(defun f--write-bytes (data filename append)
-  "Write binary DATA to FILENAME.
-If APPEND is non-nil, append the DATA to the existing contents."
-  (f--destructive filename
-    (unless (f-unibyte-string-p data)
-      (signal 'wrong-type-argument (list 'f-unibyte-string-p data)))
-    (let ((coding-system-for-write 'binary)
-          (write-region-annotate-functions nil)
-          (write-region-post-annotation-function nil))
-      (write-region data nil filename append :silent)
-      nil)))
+  (let ((content
+         (if (f-file? path)
+             (f-read-bytes path)
+           "")))
+    (f-write-bytes (concat content data) path)))
 
 
 ;;;; Destructive
