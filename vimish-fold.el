@@ -149,15 +149,29 @@ really want to include it, we correct this here."
           (cons beg end)
         (cons end beg))
     (save-excursion
-      (let* ((beg* (progn (goto-char beg)
-                          (line-beginning-position)))
-             (end* (progn (goto-char end)
-                          (if (and (zerop (current-column))
-                                   (/= end beg*)
-                                   (not vimish-fold-include-last-empty-line))
-                              (1- end)
-                            (line-end-position)))))
-        (cons beg* end*)))))
+      (save-restriction
+        (let ((beg* (progn (goto-char beg)
+                           (line-beginning-position)))
+              (end* (progn (goto-char end)
+                           (line-end-position))))
+          (when (or vimish-fold-include-last-empty-line
+                    (not (eq beg* end*)))
+            (narrow-to-region beg* end*)
+            (goto-char (point-min))
+            (let* ((empty-lines (reverse (cl-loop if (progn (goto-char (line-beginning-position)) (looking-at "$"))
+                                                  collect (line-number-at-pos)
+                                                  end
+                                                  until (progn (goto-char (line-end-position)) (eobp))
+                                                  do (forward-line 1))))
+                   (empty-lines-num (length empty-lines)))
+              (cl-case empty-lines-num
+                (0)
+                (1 (when (eq (line-number-at-pos (point-max)) (car empty-lines))
+                     (setq end* (1- end*))))
+                (t (when (and (eq (line-number-at-pos (point-max)) (car empty-lines))
+                              (> (- (car empty-lines) (cadr empty-lines)) 1))
+                     (setq end* (1- end*)))))))
+          (cons beg* end*))))))
 
 (defun vimish-fold--read-only (on beg end)
   "If ON is non-NIL, make text between BEG and END read-only.
@@ -177,7 +191,7 @@ If BUFFER is NIL, current buffer is used."
                 (format "    %d lines" (count-lines beg end)))))
     (save-excursion
       (goto-char beg)
-      (re-search-forward "^\\([[:blank:]]*.+\\)$")
+      (re-search-forward "^\\([[:blank:]]*.*\\)$")
       (concat
        (truncate-string-to-width
         (if (and (>= (match-beginning 1) beg)
@@ -425,13 +439,21 @@ This feature needs `avy' package."
 Automatically create folds from regions marked by `vimish-fold-marks' strings."
   :tag "Fold marks."
   :type '(cons :tag "Configure marks" string string)
-  :package-version '(vimish-fold . "0.3.0"))
+  :package-version '(vimish-fold . "0.3.0")
+  :safe #'vimish-fold--check-marks)
+(make-variable-buffer-local 'vimish-fold-marks)
 
 (defcustom vimish-fold-find-marks-on-open t
   "Whether to search for marks when opening buffer."
   :tag "Search for marks on open."
   :type 'boolean
   :package-version '(vimish-fold . "0.3.0"))
+
+(defun vimish-fold--check-marks (arg)
+  "Check that ARG is a valid `vimish-fold-marks' value."
+  (and (listp arg)
+       (stringp (car arg))
+       (stringp (cdr arg))))
 
 (defun vimish-fold--find-marks-in-region (beg end)
   "Find folding symbols in region between BEG and END.
@@ -506,12 +528,13 @@ Elements of LIST should be of the following form:
 
   (BEG END &optional UNFOLDED)"
   (save-excursion
-    (dolist (item list)
+    (ignore-errors
+     (dolist (item list)
       (cl-destructuring-bind (beg end . rest) item
         (funcall #'vimish-fold beg end)
         (when (car rest)
           (goto-char beg)
-          (vimish-fold-unfold))))))
+          (vimish-fold-unfold)))))))
 
 (defun vimish-fold--save-folds (&optional buffer-or-name)
   "Save folds in BUFFER-OR-NAME, which should have associated file.
@@ -520,7 +543,7 @@ BUFFER-OR-NAME defaults to current buffer."
   (with-current-buffer (or buffer-or-name (current-buffer))
     (let ((filename (buffer-file-name))
           regions)
-      (when filename
+      (when (and vimish-fold-mode filename)
         (dolist (overlay (overlays-in (point-min) (point-max)))
           (when (vimish-fold--vimish-overlay-p overlay)
             (push (list (overlay-start overlay)
@@ -528,7 +551,7 @@ BUFFER-OR-NAME defaults to current buffer."
                         (eq (overlay-get overlay 'type)
                             'vimish-fold--unfolded))
                   regions)))
-        (let ((fold-file (vimish-fold--make-file-name filename)))
+        (let ((fold-file (vimish-fold--make-file-name (f-canonical filename))))
           (if regions
               (with-temp-buffer
                 (pp regions (current-buffer))
@@ -556,8 +579,10 @@ Return T is some folds have been restored and NIL otherwise."
                  (null (vimish-fold--folds-in
                         (point-min)
                         (point-max))))
-        (let ((fold-file (vimish-fold--make-file-name filename)))
+        (let ((fold-file (vimish-fold--make-file-name (f-canonical filename))))
           (when (and fold-file (f-readable? fold-file))
+            (message "Restoring folds... %s" (buffer-file-name))
+            (message nil)
             (vimish-fold--restore-from
              (with-temp-buffer
                (insert-file-contents fold-file)
@@ -582,21 +607,22 @@ This minor mode sets hooks so when you `find-file' it calls
 
 For globalized version of this mode see `vimish-fold-global-mode'."
   :global nil
-  (let ((fnc (if vimish-fold-mode #'add-hook #'remove-hook)))
-    (funcall fnc 'find-file-hook   #'vimish-fold--restore-folds)
-    (when vimish-fold-find-marks-on-open
-      (funcall fnc 'find-file-hook #'vimish-fold-from-marks))
-    (funcall fnc 'kill-buffer-hook #'vimish-fold--save-folds)
-    (funcall fnc 'kill-emacs-hook  #'vimish-fold--kill-emacs-hook)
-    (when vimish-fold-persist-on-saving
-      (funcall fnc 'before-save-hook #'vimish-fold--save-folds))
+  (when (buffer-file-name)
     (if vimish-fold-mode
-        (vimish-fold--restore-folds)
+        (progn
+          (vimish-fold--restore-folds)
+          (when vimish-fold-find-marks-on-open
+            (vimish-fold-from-marks)))
       (vimish-fold-delete-all))))
 
 ;;;###autoload
 (define-globalized-minor-mode vimish-fold-global-mode
   vimish-fold-mode vimish-fold-mode)
+
+(add-hook 'kill-buffer-hook #'vimish-fold--save-folds)
+(when vimish-fold-persist-on-saving
+  (add-hook 'before-save-hook #'vimish-fold--save-folds))
+(add-hook 'kill-emacs-hook  #'vimish-fold--kill-emacs-hook)
 
 (provide 'vimish-fold)
 

@@ -6,7 +6,7 @@
 ;; Version: 4.1
 ;; URL: https://github.com/wolray/symbol-overlay/
 ;; Keywords: faces, matching
-;; Package-Requires: ((emacs "24.3"))
+;; Package-Requires: ((emacs "24.3") (seq "2.2"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -156,6 +156,11 @@
   :group 'symbol-overlay
   :type 'float)
 
+(defcustom symbol-overlay-overlay-created-functions '()
+  "Functions called after overlay creation that may modify the overlay."
+  :group 'symbol-overlay
+  :type 'hook)
+
 (defcustom symbol-overlay-ignore-functions
   '((c-mode . symbol-overlay-ignore-function-c)
     (c++-mode . symbol-overlay-ignore-function-c++)
@@ -172,6 +177,14 @@ definitions to prevent a language's keywords from getting highlighted."
   :type '(repeat (cons (function :tag "Mode") function)))
 
 ;;; Internal
+
+(defvar symbol-overlay-inhibit-map nil
+  "When non-nil, don't use `symbol-overlay-map'.
+This is intended for buffers/modes that use the keymap text
+property for their own purposes.  Because this package uses
+overlays it would always override the text property keymaps
+of such packages.")
+(put 'symbol-overlay-inhibit-map 'safe-local-variable 'booleanp)
 
 (defvar symbol-overlay-map
   (let ((map (make-sparse-keymap)))
@@ -212,6 +225,7 @@ You can re-bind the commands to any keys you prefer.")
         (add-hook 'post-command-hook 'symbol-overlay-post-command nil t)
         (symbol-overlay-update-timer symbol-overlay-idle-time))
     (remove-hook 'post-command-hook 'symbol-overlay-post-command t)
+    (symbol-overlay-cancel-timer)
     (symbol-overlay-remove-temp)))
 
 (defun symbol-overlay-get-list (dir &optional symbol exclude)
@@ -276,7 +290,7 @@ depending on SCOPE and WINDOW."
           (and p (setq min (progn (backward-paragraph) (point))
                        max (progn (forward-paragraph) (point))))
           (narrow-to-region min max)))
-    (when window
+    (when (and window (eq (window-buffer) (current-buffer)))
       (narrow-to-region (window-start) (window-end)))))
 
 (defun symbol-overlay-remove-temp ()
@@ -286,7 +300,7 @@ depending on SCOPE and WINDOW."
 
 (defun symbol-overlay-maybe-put-temp ()
   "Highlight symbol at point when there are more than 2 occurrences.
-This only effects symbols in the current displayed window if
+This only affects symbols in the current displayed window if
 `symbol-overlay-displayed-window' is non-nil."
   (when symbol-overlay-mode
     (let* ((case-fold-search nil)
@@ -317,15 +331,29 @@ This only effects symbols in the current displayed window if
     (when f
       (funcall f symbol))))
 
-(defvar symbol-overlay-timer nil
+(defvar-local symbol-overlay-timer nil
   "Timer for temporary highlighting.")
+
+(defun symbol-overlay-cancel-timer ()
+  "Cancel `symbol-overlay-timer' if it is running."
+  (when symbol-overlay-timer
+    (cancel-timer symbol-overlay-timer)))
+
+(defun symbol-overlay-idle-timer (buf)
+  "Idle timer callback for BUF.
+This is used to maybe highlight the symbol at point, but only if
+the buffer is visible in the currently-selected window at the
+time."
+  (when (and (buffer-live-p buf) (eq (window-buffer) buf))
+    (with-current-buffer buf
+      (symbol-overlay-maybe-put-temp))))
 
 (defun symbol-overlay-update-timer (value)
   "Update `symbol-overlay-timer' with new idle-time VALUE."
-  (and symbol-overlay-timer (cancel-timer symbol-overlay-timer))
+  (symbol-overlay-cancel-timer)
   (setq symbol-overlay-timer
         (and value (> value 0)
-             (run-with-idle-timer value t 'symbol-overlay-maybe-put-temp))))
+             (run-with-idle-timer value t 'symbol-overlay-idle-timer (current-buffer)))))
 
 (defun symbol-overlay-post-command ()
   "Installed on `post-command-hook'."
@@ -338,11 +366,14 @@ If FACE is non-nil, use it as the overlay’s face.
 Otherwise apply `symbol-overlay-default-face'."
   (let ((ov (make-overlay (match-beginning 0) (match-end 0))))
     (if face (progn (overlay-put ov 'face face)
-                    (overlay-put ov 'keymap symbol-overlay-map)
+                    (unless symbol-overlay-inhibit-map
+                      (overlay-put ov 'keymap symbol-overlay-map))
                     (overlay-put ov 'evaporate t)
                     (overlay-put ov 'symbol symbol))
       (overlay-put ov 'face 'symbol-overlay-default-face)
-      (overlay-put ov 'symbol ""))))
+      (overlay-put ov 'symbol ""))
+    (dolist (fun symbol-overlay-overlay-created-functions)
+      (funcall fun ov))))
 
 (defun symbol-overlay-put-all (symbol scope &optional keyword)
   "Put overlays on all occurrences of SYMBOL in the buffer.
@@ -382,10 +413,10 @@ If SHOW-COLOR is non-nil, display the color used by current overlay."
            (count (length before))
            ;; Log to echo area but not *Messages*
            message-log-max)
-      (message (concat symbol
-                       ": %d/%d"
+      (message (concat "%s: %d/%d"
                        (and (cadr keyword) " in scope")
                        (and show-color (format " (%s)" (cddr keyword))))
+               symbol
                (+ count 1)
                (+ count (length after))))))
 
@@ -755,7 +786,7 @@ DIR must be 1 or -1."
            new)
       (beginning-of-thing 'symbol)
       (push-mark nil t)
-      (setq new (read-string (concat "Rename" (and scope " in scope") ": ")
+      (setq new (read-string (concat "Rename" (and scope " in scope") " to: ")
                              symbol))
       (unless (string= new symbol)
         (symbol-overlay-maybe-remove (symbol-overlay-assoc new))

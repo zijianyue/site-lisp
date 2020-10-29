@@ -36,19 +36,27 @@
 (defvar helm-lsp-symbols-result-p nil)
 (defvar helm-lsp-symbols-result nil)
 
-(defun helm-lsp-workspace-symbol-action (candidate)
+(defgroup helm-lsp nil
+  "`helm-lsp' group."
+  :group 'lsp-mode
+  :tag "Language Server")
+
+(lsp-defun helm-lsp-workspace-symbol-action ((&SymbolInformation :location
+                                                                 (&Location :uri :range (&RangeToPoint :start))))
   "Action for helm workspace symbol.
 CANDIDATE is the selected item in the helm menu."
-  (-let* (((&hash "uri" "range" (&hash "start" (&hash "line" "character"))) (gethash "location" candidate)))
-    (find-file (lsp--uri-to-path uri))
-    (goto-char (point-min))
-    (forward-line line)
-    (forward-char character)))
+  (find-file (lsp--uri-to-path uri))
+  (goto-char start))
 
 (defface helm-lsp-container-face
   '((t :height 0.8 :inherit shadow))
   "The face used for code lens overlays."
-  :group 'lsp-mode)
+  :group 'helm-lsp)
+
+(defcustom helm-lsp-treemacs-icons t
+  "If non-nil, use `lsp-treemacs' icons."
+  :group 'helm-lsp
+  :type 'boolean)
 
 (defun helm-lsp--extract-file-name (uri)
   (propertize
@@ -57,58 +65,67 @@ CANDIDATE is the selected item in the helm menu."
      (f-filename uri))
    'face 'helm-lsp-container-face))
 
+(defun helm-lsp--get-icon (kind)
+  (require 'lsp-treemacs)
+  (ht-get (treemacs-theme->gui-icons (treemacs--find-theme lsp-treemacs-theme))
+          (lsp-treemacs-symbol-kind->icon kind)))
+
 (defun helm-lsp--workspace-symbol (workspaces name input)
   "Search against WORKSPACES NAME with default INPUT."
   (setq helm-lsp-symbols-result nil)
   (if workspaces
-      (helm
-       :sources (helm-build-sync-source name
-                  :candidates (lambda ()
-                                (if helm-lsp-symbols-result-p
-                                    helm-lsp-symbols-result
-                                  (with-lsp-workspaces workspaces
-                                    (-let (((request &as &plist :id request-id) (lsp-make-request
-                                                                                 "workspace/symbol"
-                                                                                 (list :query helm-pattern))))
-                                      ;; cancel if there is pending request
-                                      (when helm-lsp-symbols-request-id
-                                        (lsp--cancel-request helm-lsp-symbols-request-id)
-                                        (setq helm-lsp-symbols-request-id nil))
+      (with-lsp-workspaces workspaces
+        (helm
+         :sources (helm-build-sync-source name
+                    :candidates (lambda ()
+                                  (if helm-lsp-symbols-result-p
+                                      helm-lsp-symbols-result
+                                    (with-lsp-workspaces workspaces
+                                      (-let (((request &as &plist :id request-id) ))
+                                        (setq helm-lsp-symbols-request-id request-id)
+                                        (lsp-request-async
+                                         "workspace/symbol"
+                                         (list :query helm-pattern)
+                                         (lambda (candidates)
+                                           (setq helm-lsp-symbols-request-id nil)
+                                           (and helm-alive-p
+                                                (let ((helm-lsp-symbols-result-p t))
+                                                  (setq helm-lsp-symbols-result candidates)
+                                                  (helm-update))))
+                                         :mode 'detached
+                                         :cancel-token :workspace-symbols)
+                                        helm-lsp-symbols-result))))
+                    :action 'helm-lsp-workspace-symbol-action
+                    :volatile t
+                    :fuzzy-match t
+                    :match (-const t)
+                    :keymap helm-map
+                    :candidate-transformer
+                    (lambda (candidates)
+                      (-map
+                       (-lambda ((candidate &as
+                                            &SymbolInformation :container-name? :name :kind))
+                         (let ((type (or (alist-get kind lsp--symbol-kind) "Unknown")))
+                           (cons
+                            (if (and (featurep 'lsp-treemacs)
+                                     helm-lsp-treemacs-icons)
+                                (concat
+                                 (or (helm-lsp--get-icon kind)
+                                     (helm-lsp--get-icon 'fallback))
+                                 (if (s-blank? container-name?)
+                                     name
+                                   (concat name " " (propertize container-name? 'face 'helm-lsp-container-face))))
 
-                                      (setq helm-lsp-symbols-request-id request-id)
-                                      (lsp-send-request-async
-                                       request
-                                       (lambda (candidates)
-                                         (setq helm-lsp-symbols-request-id nil)
-                                         (and helm-alive-p
-                                              (let ((helm-lsp-symbols-result-p t))
-                                                (setq helm-lsp-symbols-result candidates)
-                                                (helm-update))))
-                                       'detached)
-                                      helm-lsp-symbols-result))))
-                  :action 'helm-lsp-workspace-symbol-action
-                  :volatile t
-                  :fuzzy-match t
-                  :match (-const t)
-                  :keymap helm-map
-                  :candidate-transformer
-                  (lambda (candidates)
-                    (-map
-                     (-lambda ((candidate &as
-                                          &hash "containerName" container-name
-                                          "name" "kind"))
-                       (let ((type (or (alist-get kind lsp--symbol-kind) "Unknown")))
-                         (cons
-                          (concat (if (s-blank? container-name)
-                                      name
-                                    (concat name " " (propertize container-name 'face 'helm-lsp-container-face) " -" ))
-                                  " "
-                                  (propertize (concat "(" type ")") 'face 'font-lock-type-face))
-                          candidate)))
-                     candidates))
-                  :candidate-number-limit nil
-                  :requires-pattern 0)
-       :input input)
+                              (concat (if (s-blank? container-name?)
+                                          name
+                                        (concat name " " (propertize container-name? 'face 'helm-lsp-container-face) " -" ))
+                                      " "
+                                      (propertize (concat "(" type ")") 'face 'font-lock-type-face)))
+                            candidate)))
+                       candidates))
+                    :candidate-number-limit nil
+                    :requires-pattern 0)
+         :input input))
     (user-error "No LSP workspace active")))
 
 ;;;###autoload
@@ -116,7 +133,9 @@ CANDIDATE is the selected item in the helm menu."
   "`helm' for lsp workspace/symbol.
 When called with prefix ARG the default selection will be symbol at point."
   (interactive "P")
-  (helm-lsp--workspace-symbol (lsp-workspaces)
+  (helm-lsp--workspace-symbol (or (lsp-workspaces)
+                                  (gethash (lsp-workspace-root default-directory)
+                                           (lsp-session-folder->servers (lsp-session))))
                               "Workspace symbol"
                               (when arg (thing-at-point 'symbol))))
 
@@ -145,9 +164,8 @@ When called with prefix ARG the default selection will be symbol at point."
                 (lambda (candidates)
                   (-map
                    (-lambda ((candidate &as
-                                        &hash "title" title))
-                     (list title
-                           :data candidate))
+                                        &CodeAction :title))
+                     (list title :data candidate))
                    candidates))
                 :action '(("Execute code action" . (lambda(candidate)
                                                      (lsp-execute-code-action (plist-get candidate :data)))))))))))
