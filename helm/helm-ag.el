@@ -4,7 +4,7 @@
 
 ;; Author: Syohei YOSHIDA <syohex@gmail.com>
 ;; URL: https://github.com/syohex/emacs-helm-ag
-;; Version: 0.61
+;; Version: 0.64
 ;; Package-Requires: ((emacs "25.1") (helm "2.0"))
 
 ;; This program is free software; you can redistribute it and/or modify
@@ -300,8 +300,8 @@ Default behaviour shows finish and result in mode-line."
       (while (re-search-forward "^\\([^:]+\\)" nil t)
         (replace-match (abbreviate-file-name (match-string-no-properties 1)))))))
 
-(defun helm-ag--command-succeeded-p (cmd exit-status)
-  "Not documented, CMD, EXIT-STATUS."
+(defun helm-ag--command-succeeded-p (exit-status)
+  "Not documented, EXIT-STATUS."
   (cond ((integerp helm-ag-success-exit-status) (= exit-status helm-ag-success-exit-status))
         ((consp helm-ag-success-exit-status) (member exit-status helm-ag-success-exit-status))
         (t (zerop exit-status))))
@@ -321,7 +321,7 @@ Default behaviour shows finish and result in mode-line."
         (let ((ret (apply #'process-file (car cmds) nil t nil (cdr cmds))))
           (if (zerop (length (buffer-string)))
               (error "No ag output: '%s'" helm-ag--last-query)
-            (unless (helm-ag--command-succeeded-p (car cmds) ret)
+            (unless (helm-ag--command-succeeded-p ret)
               (unless (executable-find (car cmds))
                 (error "'%s' is not installed" (car cmds)))
               (error "Failed: '%s'" helm-ag--last-query))))
@@ -624,7 +624,7 @@ Default behaviour shows finish and result in mode-line."
   (interactive)
   (goto-char (point-min))
   (let ((read-only-files 0)
-        (files-to-lines (make-hash-table))
+        (files-to-lines (make-hash-table :test #'equal))
         (regexp (helm-ag--match-line-regexp))
         (line-deletes (make-hash-table :test #'equal)))
     ;; Group changes by file
@@ -637,14 +637,16 @@ Default behaviour shows finish and result in mode-line."
         (if (not (file-writable-p file))
             (cl-incf read-only-files)
           (if lines-list
-              (push (list line body ovs) lines-list)
+              (progn
+                (push (list line body ovs) lines-list)
+                (puthash file lines-list files-to-lines))
             (puthash file (list (list line body ovs)) files-to-lines)))))
     ;; Batch edits by file
     (maphash
      (lambda (curr-file lines-data)
        (with-temp-buffer
          (insert-file-contents curr-file)
-         (dolist (curr-line-data lines-data)
+         (dolist (curr-line-data (reverse lines-data))
            (cl-destructuring-bind
                (line body ovs) curr-line-data
              (goto-char (point-min))
@@ -1133,7 +1135,9 @@ Continue searching the parent directory? "))
            proc
            (lambda (process event)
              (helm-process-deferred-sentinel-hook
-              process event (helm-default-directory)))))))))
+              process event (helm-default-directory))
+             (when (string= event "finished\n")
+               (helm-ag--do-ag-propertize helm-input)))))))))
 
 (defconst helm-do-ag--help-message
   "\n* Helm Do Ag\n
@@ -1220,7 +1224,7 @@ Continue searching the parent directory? "))
    (candidate-number-limit :initform 99999)
    (requires-pattern :initform 3)
    (persistent-action :initform 'helm-ag--persistent-action)
-   (nomark :initform t)
+   (nomark :initform nil)
    (action :initform 'helm-ag--actions))
   "Not documented.")
 
@@ -1231,12 +1235,13 @@ Continue searching the parent directory? "))
   (let ((search-dir (or search-dir dir)))
     (setq helm-source-do-ag
           (helm-make-source "AG" 'helm-do-ag-class
-            :candidates-process (lambda ()
-                                  (helm-ag--do-ag-set-command)
-                                  (helm-ag--do-ag-candidate-process dir))
-            :header-name (lambda (_name)
-                           (helm-ag--helm-header search-dir))
-            :follow (and helm-follow-mode-persistent 1)))))
+                            :candidates-process
+                            (lambda ()
+                              (helm-ag--do-ag-set-command)
+                              (helm-ag--do-ag-candidate-process dir))
+                            :header-name
+                            (lambda (_name) (helm-ag--helm-header search-dir))
+                            :follow (and helm-follow-mode-persistent 1)))))
 
 (defun helm-ag--do-ag-up-one-level ()
   "Not documented."
@@ -1259,11 +1264,12 @@ Continue searching the parent directory? "))
 
 (defun helm-ag--set-do-ag-option ()
   "Not documented."
-  (when (or (< (prefix-numeric-value current-prefix-arg) 0)
-            helm-ag-always-set-extra-option)
-    (let ((option (read-string "Extra options: " (or helm-ag--extra-options "")
-                               'helm-ag--extra-options-history)))
-      (setq helm-ag--extra-options option))))
+  (if (or (< (prefix-numeric-value current-prefix-arg) 0)
+          helm-ag-always-set-extra-option)
+      (let ((option (read-string "Extra options: " (or helm-ag--extra-options "")
+                                 'helm-ag--extra-options-history)))
+        (setq helm-ag--extra-options option))
+    (setq helm-ag--extra-options nil)))
 
 (defun helm-ag--set-command-features ()
   "Not documented."
