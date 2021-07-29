@@ -3,12 +3,12 @@
 ;; Copyright (C) 2019  Emacsorphanage Community
 ;; Copyright (C) 2013-2018  Shingo Fukuyama
 
-;; Version: 2.0.0
+;; Version: 3.0.0
 ;; Author: Shingo Fukuyama - http://fukuyama.co
 ;; URL: https://github.com/emacsorphanage/helm-swoop
 ;; Created: Oct 24 2013
 ;; Keywords: convenience, helm, swoop, inner, buffer, search
-;; Package-Requires: ((emacs "24.4") (helm "3.2"))
+;; Package-Requires: ((emacs "25.1") (helm "3.6"))
 
 ;; This program is free software: you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -809,7 +809,7 @@ If LINUM is number, lines are separated by LINUM."
       (isearch-exit))
     (helm-swoop :query query)))
 ;; When doing isearch, hand the word over to helm-swoop
-(define-key isearch-mode-map (kbd "M-i") 'helm-swoop-from-isearch)
+;; (define-key isearch-mode-map (kbd "M-i") 'helm-swoop-from-isearch)
 
 ;; Receive word from evil search ---------------
 (defun helm-swoop-from-evil-search ()
@@ -1078,23 +1078,19 @@ If LINUM is number, lines are separated by LINUM."
 (defun helm-multi-swoop--get-marked-buffers ()
   "Get marked buffers."
   (let ((buf (get-buffer helm-multi-swoop-buffer-list))
-        list)
-    (when buf
-      (with-current-buffer (get-buffer helm-multi-swoop-buffer-list)
-        (mapc (lambda (ov)
-                (when (eq 'helm-visible-mark (overlay-get ov 'face))
-                  (setq list (cons
-                              (let ((word (buffer-substring-no-properties
-                                           (overlay-start ov) (overlay-end ov))))
-                                (mapc (lambda (r)
-                                        (setq word (replace-regexp-in-string
-                                                    (car r) (cdr r) word)))
-                                      (list '("\\`[ \t\n\r]+" . "")
-                                            '("[ \t\n\r]+\\'" . "")))
-                                word)
-                              list))))
-              (overlays-in (point-min) (point-max))))
-      (delete "" list))))
+        lst)
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (dolist (ov (cl-delete-if-not
+                     (lambda (o)
+                       (eq 'helm-visible-mark (overlay-get o 'face)))
+                     (overlays-in (point-min) (point-max))))
+          (let ((word (string-trim
+                       (buffer-substring-no-properties
+                        (overlay-start ov) (overlay-end ov)))))
+            (unless (string-empty-p word)
+              (push word lst)))))
+      (nreverse (sort lst #'string<)))))
 
 ;; core --------------------------------------------------------
 

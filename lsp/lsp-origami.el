@@ -1,11 +1,11 @@
 ;;; lsp-origami.el --- origami.el support for lsp-mode    -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2019  Vibhav Pant <vibhavp@gmail.com>
+;; Copyright (C) 2019-2020  Vibhav Pant <vibhavp@gmail.com>
 
 ;; Author: Vibhav Pant
-;; Version: 0.1
+;; Version: 1.0.0
 ;; Keywords: languages lsp-mode
-;; Package-Requires: ((origami "1.0") (lsp-mode "20190326.522"))
+;; Package-Requires: ((origami "1.0") (lsp-mode "6.1"))
 ;; URL: https://github.com/emacs-lsp/lsp-origami
 
 ;; This program is free software; you can redistribute it and/or modify
@@ -27,7 +27,7 @@
 ;; protocol's "textDocument/foldingRange" functionality.  It can be enabled
 ;; with
 ;; (require 'lsp-origami)
-;; (add-hook 'origami-mode-hook #'lsp-origami-mode)
+;; (add-hook 'lsp-after-open-hook #'lsp-origami-try-enable)
 
 ;;; Code:
 
@@ -36,26 +36,39 @@
 
 (defun lsp-origami--folding-range-to-fold (range create)
   (funcall create
-	   (lsp--folding-range-beg range)
-	   (lsp--folding-range-end range)
-	   0
-	   (seq-map
-	    (lambda (range) (lsp-origami--folding-range-to-fold range create))
-	    (seq-remove (lambda (child-range)
-			  (or (eq (lsp--folding-range-beg child-range)
-				  (lsp--folding-range-beg range))
-			      (eq (lsp--folding-range-end child-range)
-				  (lsp--folding-range-end range))))
-			(lsp--folding-range-children range)))))
+           (lsp--folding-range-beg range)
+           (lsp--folding-range-end range)
+           0
+           (seq-map
+            (lambda (range) (lsp-origami--folding-range-to-fold range create))
+            (seq-remove (lambda (child-range)
+                          (or (eq (lsp--folding-range-beg child-range)
+                                  (lsp--folding-range-beg range))
+                              (eq (lsp--folding-range-end child-range)
+                                  (lsp--folding-range-end range))))
+                        (lsp--folding-range-children range)))))
+
 
 (defun lsp-origami--parser (create)
-  "Get a list of Folding Ranges for the current buffer."
+  "Get a list of Folding Ranges for the current buffer, with CREATE as the origami callback."
   (lambda (_content)
-    (unless (lsp--capability "foldingRangeProvider")
+    (unless (lsp-feature? "foldingRangeProvider")
       (signal 'lsp-capability-not-supported (list "foldingRangeProvider")))
     (seq-map (lambda (range)
 	       (lsp-origami--folding-range-to-fold range create))
 	     (lsp--get-nested-folding-ranges))))
+
+;;;###autoload
+(defun lsp-origami-try-enable ()
+  "Turn on `origami-mode' locally and try to enable `lsp-origami-mode'."
+  (interactive)
+  (origami-mode 1)
+  (cond ((lsp--capability "foldingRangeProvider")
+         (lsp-origami-mode 1))
+        ((called-interactively-p 'any)
+         (signal 'lsp-capability-not-supported (list "foldingRangeProvider")))
+        (t
+         (lsp-log "This server does not support foldingRangeProvider"))))
 
 ;;;###autoload
 (define-minor-mode lsp-origami-mode
@@ -64,11 +77,11 @@
   :global nil
   (cond
    (lsp-origami-mode
-    (setq-local origami-fold-style 'lsp-mode))
+    (setq-local origami-fold-style 'lsp-mode)
+    (setq-local origami-parser-alist
+                (cons '(lsp-mode . lsp-origami--parser) origami-parser-alist)))
    (t
     (setq-local origami-fold-style nil))))
-
-(push '(lsp-mode . lsp-origami--parser) origami-parser-alist)
 
 (provide 'lsp-origami)
 ;;; lsp-origami.el ends here

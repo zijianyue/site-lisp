@@ -255,7 +255,7 @@
 ;;
 
 (eval-and-compile
-  (require 'cl-lib)
+  (require 'cl-extra)
   (require 'cl-macs)
 
   ;; avoid compile warning on unbound variable
@@ -458,6 +458,12 @@ t, goto position on the line where the bookmark was set."
   :group 'bm)
 
 
+(defcustom bm-show-enable-mouse t
+  "*If t, `bm-show' allows for mouse clicks to jump to bookmarks."
+  :type 'boolean
+  :group 'bm)
+
+
 (defcustom bm-repository-file (if (file-exists-p (expand-file-name "~/.bm-repository")) ; use the old path if it exists
                                   (expand-file-name "~/.bm-repository")
                                 (expand-file-name "bm-repository" user-emacs-directory))
@@ -532,6 +538,11 @@ before bm is loaded.")
   "Fringe marker side. Left of right.")
 
 (defvar bm-current nil)
+
+(defvar bm-after-goto-hook nil
+  "Hook run after jumping to a bookmark in `bm-goto'. This can be
+  useful to expand a collapsed section containing a bookmark.")
+
 
 ;; avoid errors on emacs running in a terminal
 (when (fboundp 'define-fringe-bitmap)
@@ -1099,6 +1110,7 @@ EV is the mouse event."
                         (overlay-start bookmark)
                         (marker-position (overlay-get bookmark 'position))))
           (goto-char (overlay-start bookmark)))
+        (run-hooks 'bm-after-goto-hook)
         (setq bm-wrapped nil)           ; turn off wrapped state
         (if bm-recenter
             (recenter))
@@ -1253,9 +1265,7 @@ users by the likes of `bm-show' and `bm-show-all'."
       (list
        ;; The header
        (format-non-nil format-string
-                       (if all
-                           (format "%s:%s" bm-header-buffer-name
-                                   bm-header-line)
+                       (if all (format "%s:%s" bm-header-buffer-name bm-header-line)
                          bm-header-line)
                        (when bm-show-annotations
                          bm-header-annotation)
@@ -1267,24 +1277,55 @@ users by the likes of `bm-show' and `bm-show-all'."
               (let* ((line (lstrip (buffer-substring (overlay-start bm)
                                                      (overlay-end bm))))
                      ;; line numbers start on 1
-                     (line-num (+ 1 (count-lines (point-min) (overlay-start bm)))) 
+                     (line-num (+ 1 (count-lines (point-min) (overlay-start bm))))
                      (string
                       (format-non-nil format-string
-                                      (if all
-                                          (format "%s:%d" (buffer-name)
-                                                  line-num)
+                                      (if all (format "%s:%d" (buffer-name) line-num)
                                         line-num)
                                       (when bm-show-annotations
                                         (or (overlay-get bm 'annotation) ""))
                                       (if (string-match "\n$" line)
                                           line
                                         (concat line "\n")))))
-                (put-text-property 0 (length string) 'bm-buffer (buffer-name)
-                                   string)
+                (when bm-show-enable-mouse
+                  (put-text-property 0 (- (length string) 1) 'mouse-face 'highlight string)
+                  (let ((map (make-sparse-keymap)))
+                    (define-key map [mouse-1] 'bm-show-click-mouse-1)
+                    (define-key map [mouse-3] 'bm-show-click-mouse-3)
+                    (put-text-property 0 (length string) 'keymap map string)))
+
+                (put-text-property 0 (length string) 'bm-buffer (buffer-name) string)
                 (put-text-property 0 (length string) 'bm-bookmark bm string)
+
                 string)))
         bookmarks
         "")))))
+
+
+(defun bm-show-click-mouse-1 (event)
+  "Respond to `mouse-1' (left) click on a bookmark in a `bm-show' buffer"
+  (interactive "e")
+  (bm-show-click-mouse event t))
+
+
+(defun bm-show-click-mouse-3 (event)
+  "Respond to `mouse-3' (right) click on a bookmark in a `bm-show' buffer"
+  (interactive "e")
+  (bm-show-click-mouse event))
+
+
+(defun bm-show-click-mouse (event &optional close)
+  "Goto the bookmark under the mouse, close the `bm-show' buffer if optional parameter is present."
+  (let ((window (posn-window (event-end event)))
+        (pos (posn-point (event-end event))))
+
+    (if (not (windowp window))
+        (error "No file chosen"))
+    (with-current-buffer (window-buffer window)
+      (goto-char pos)
+      (if close (bm-show-goto-bookmark)
+        (bm-show-bookmark))
+      )))
 
 
 (defun bm-show-display-lines (header lines)
