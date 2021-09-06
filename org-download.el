@@ -74,6 +74,8 @@
 (require 'url-parse)
 (require 'url-http)
 (require 'org)
+(require 'org-attach)
+(require 'org-element)
 
 (defgroup org-download nil
   "Image drag-and-drop for org-mode."
@@ -97,7 +99,8 @@ See `org-download--dir-1' for more info."
 
 (defcustom org-download-heading-lvl 0
   "Heading level to be used in `org-download--dir-2'."
-  :type 'integer)
+  :type
+  '(choice integer (const :tag "None" nil)))
 (make-variable-buffer-local 'org-download-heading-lvl)
 
 (defvar org-download-path-last-file nil
@@ -129,6 +132,7 @@ will be used."
   :type '(choice
           (const :tag "gnome-screenshot" "gnome-screenshot -a -f %s")
           (const :tag "scrot" "scrot -s %s")
+          (const :tag "flameshot" "flameshot gui --raw > %s")
           (const :tag "gm" "gm import %s")
           (const :tag "imagemagick/import" "import %s")
           (const :tag "imagemagick/import + xclip to save to clipboard"
@@ -140,6 +144,8 @@ will be used."
           ;; press space key to toggle between selection and
           ;; window/application mode.
           (const :tag "screencapture" "screencapture -i %s")
+          ;; KDE screenshot application
+          (const :tag "spectacle" "spectacle -br -o %s")
           ;; take an image that is already on the clipboard, for Linux
           (const :tag "xclip"
            "xclip -selection clipboard -t image/png -o > %s")
@@ -149,7 +155,11 @@ will be used."
           (const :tag "grim + slurp" "grim -g \"$(slurp)\" %s")
           (function :tag "Custom function")))
 
-(defcustom org-download-screenshot-file (expand-file-name "screenshot.png" temporary-file-directory)
+(defcustom org-download-screenshot-basename "screenshot.png"
+  "Default base filename to use for screenshots."
+  :type 'string)
+
+(defcustom org-download-screenshot-file (expand-file-name org-download-screenshot-basename temporary-file-directory)
   "The file to capture screenshots."
   :type 'string)
 
@@ -198,6 +208,10 @@ For example:
 (declare-function posframe-workable-p "ext:posframe")
 (declare-function posframe-show "ext:posframe")
 
+(defun org-download-org-mode-p ()
+  "Return `t' if major-mode or derived-mode-p equals 'org-mode, otherwise `nil'."
+  (or (eq major-mode 'org-mode) (when (derived-mode-p 'org-mode) t)))
+
 (defun org-download--display-inline-images ()
   (cond
    ((eq org-download-display-inline-images t)
@@ -221,9 +235,12 @@ For example:
           (progn
             (unless (= cur-lvl 1)
               (org-up-heading-all (- (1- (org-current-level)) lvl)))
-            (replace-regexp-in-string
-             " " "_"
-             (nth 4 (org-heading-components))))
+            (let ((heading (nth 4 (org-heading-components))))
+              (if heading
+                  (replace-regexp-in-string
+                   " " "_"
+                   heading)
+                "")))
         ""))))
 
 (defun org-download--dir-1 ()
@@ -234,7 +251,7 @@ It's `org-download-image-dir', unless it's nil.  Then it's \".\"."
 (defun org-download--dir-2 ()
   "Return the second part of the directory path for `org-download--dir'.
 Unless `org-download-heading-lvl' is nil, it's the name of the current
-`org-download-heading-lvl'-leveled heading.  Otherwise it's \"\"."
+`org-download-heading-lvl'-leveled heading."
   (when org-download-heading-lvl
     (org-download-get-heading
      org-download-heading-lvl)))
@@ -244,7 +261,7 @@ Unless `org-download-heading-lvl' is nil, it's the name of the current
 
 The path is composed from `org-download--dir-1' and `org-download--dir-2'.
 The directory is created if it didn't exist before."
-  (if (eq major-mode 'org-mode)
+  (if (org-download-org-mode-p)
       (let* ((part1 (org-download--dir-1))
              (part2 (org-download--dir-2))
              (dir (if part2
@@ -263,9 +280,11 @@ The directory is created if it didn't exist before."
 It's affected by `org-download--dir'.
 EXT can hold the file extension, in case LINK doesn't provide it."
   (let ((filename
-         (file-name-nondirectory
-          (car (url-path-and-query
-                (url-generic-parse-url link)))))
+         (replace-regexp-in-string
+          "%20" " "
+          (file-name-nondirectory
+           (car (url-path-and-query
+                 (url-generic-parse-url link))))))
         (dir (org-download--dir)))
     (when (string-match ".*?\\.\\(?:png\\|jpg\\)\\(.*\\)$" filename)
       (setq filename (replace-match "" nil nil filename 1)))
@@ -282,6 +301,9 @@ EXT can hold the file extension, in case LINK doesn't provide it."
    (format-time-string org-download-timestamp)
    filename))
 
+(defvar org-download--file-content nil
+  "When non-nil, store the file name of an already downloaded file.")
+
 (defun org-download--image (link filename)
   "Save LINK to FILENAME asynchronously and show inline images in current buffer."
   (when (string= "file" (url-type (url-generic-parse-url link)))
@@ -289,6 +311,9 @@ EXT can hold the file extension, in case LINK doesn't provide it."
   (cond ((and (not (file-remote-p link))
               (file-exists-p link))
          (copy-file link (expand-file-name filename)))
+        (org-download--file-content
+         (copy-file org-download--file-content (expand-file-name filename))
+         (setq org-download--file-content nil))
         ((eq org-download-backend t)
          (org-download--image/url-retrieve link filename))
         (t
@@ -323,44 +348,77 @@ COMMAND is a format-style string with two slots for LINK and FILENAME."
 
 (defun org-download--image/url-retrieve (link filename)
   "Save LINK to FILENAME using `url-retrieve'."
-  (let ((mode major-mode))
-    (url-retrieve
-     link
-     (lambda (status filename buffer)
-       (org-download--write-image status filename)
-       (cond ((eq mode 'org-mode)
-              (with-current-buffer buffer
-                (org-download--display-inline-images)))
-             ((eq mode 'dired-mode)
-              (let ((inhibit-message t))
-                (with-current-buffer (dired (file-name-directory filename))
-                  (revert-buffer nil t))))))
-     (list
-      (expand-file-name filename)
-      (current-buffer))
-     nil t)))
+  (url-retrieve
+   link
+   (lambda (status filename buffer)
+     (org-download--write-image status filename)
+     (cond ((org-download-org-mode-p)
+            (with-current-buffer buffer
+              (org-download--display-inline-images)))
+           ((eq major-mode 'dired-mode)
+            (let ((inhibit-message t))
+              (with-current-buffer (dired (file-name-directory filename))
+                (revert-buffer nil t))))))
+   (list
+    (expand-file-name filename)
+    (current-buffer))
+   nil t))
 
 (defun org-download-yank ()
   "Call `org-download-image' with current kill."
   (interactive)
-  (org-download-image
-   (replace-regexp-in-string "\n+$" "" (current-kill 0))))
+  (let ((k (current-kill 0)))
+    (unless (url-type (url-generic-parse-url k))
+      (user-error "Not a URL: %s" k))
+    (org-download-image
+     (replace-regexp-in-string
+      "\n+$" "" k))))
 
-(defun org-download-screenshot ()
+(defun org-download-screenshot (&optional basename)
   "Capture screenshot and insert the resulting file.
 The screenshot tool is determined by `org-download-screenshot-method'."
   (interactive)
-  (let ((default-directory "~"))
-    (make-directory (file-name-directory org-download-screenshot-file) t)
+  (let* ((screenshot-dir (file-name-directory org-download-screenshot-file))
+         (org-download-screenshot-file
+          (if basename
+              (concat screenshot-dir basename) org-download-screenshot-file)))
+    (make-directory screenshot-dir t)
     (if (functionp org-download-screenshot-method)
         (funcall org-download-screenshot-method
                  org-download-screenshot-file)
       (shell-command-to-string
        (format org-download-screenshot-method
-               org-download-screenshot-file))))
-  (when (file-exists-p org-download-screenshot-file)
-    (org-download-image org-download-screenshot-file)
-    (delete-file org-download-screenshot-file)))
+               org-download-screenshot-file)))
+    (when (file-exists-p org-download-screenshot-file)
+      (org-download-image org-download-screenshot-file)
+      (delete-file org-download-screenshot-file))))
+
+(defun org-download-clipboard (&optional basename)
+  "Capture the image from the clipboard and insert the resulting file."
+  (interactive)
+  (let ((org-download-screenshot-method
+         (cl-case system-type
+           (gnu/linux
+            (if (string= "wayland" (getenv "XDG_SESSION_TYPE"))
+                (if (executable-find "wl-paste")
+                    "wl-paste -t image/png > %s"
+                  (user-error
+                   "Please install the \"wl-paste\" program included in wl-clipboard"))
+              (if (executable-find "xclip")
+                  "xclip -selection clipboard -t image/png -o > %s"
+                (user-error
+                 "Please install the \"xclip\" program"))))
+           ((windows-nt cygwin)
+            (if (executable-find "convert")
+                "convert clipboard: %s"
+              (user-error
+               "Please install the \"convert\" program included in ImageMagick")))
+           ((darwin berkeley-unix)
+            (if (executable-find "pngpaste")
+                "pngpaste %s"
+              (user-error
+               "Please install the \"pngpaste\" program from Homebrew."))))))
+    (org-download-screenshot basename)))
 
 (declare-function org-attach-dir "org-attach")
 (declare-function org-attach-attach "org-attach")
@@ -404,47 +462,67 @@ It's inserted before the image link and is used to annotate it.")
             (org-link-escape
              (funcall org-download-abbreviate-filename-function filename)))))
 
+(defun org-download--detect-ext (link buffer)
+  (let (ext)
+    (with-current-buffer buffer
+      (cond ((let ((regexes org-download-img-regex-list)
+                   lnk)
+               (while (and (not lnk) regexes)
+                 (goto-char (point-min))
+                 (when (re-search-forward (pop regexes) nil t)
+                   (backward-char)
+                   (setq lnk (read (current-buffer)))))
+               (when lnk
+                 (setq link lnk))))
+            ((progn
+               (goto-char (point-min))
+               (when (re-search-forward "^Content-Type: image/\\(.*\\)$" nil t)
+                 (setq ext (match-string 1)))))
+            ((progn
+               (goto-char (point-min))
+               (when (re-search-forward "^Content-Type: application/pdf" nil t)
+                 (setq ext "pdf"))
+               (re-search-forward "^%PDF")
+               (beginning-of-line)
+               (write-region
+                (point) (point-max)
+                (setq org-download--file-content "/tmp/org-download.pdf"))
+               t))
+            (t
+             (error "Link %s does not point to an image; unaliasing failed" link)))
+      (list link ext))))
+
+(defun org-download--parse-link (link)
+  (cond ((image-type-from-file-name link)
+         (list link nil))
+        ((string-match "^file:/+" link)
+         (list link nil))
+        (t
+         (let ((buffer (url-retrieve-synchronously link t)))
+           (org-download--detect-ext link buffer)))))
+
 (defun org-download-image (link)
   "Save image at address LINK to `org-download--dir'."
   (interactive "sUrl: ")
-  (let (ext)
-    (unless (image-type-from-file-name link)
-      (with-current-buffer (url-retrieve-synchronously link t)
-        (cond ((let ((regexes org-download-img-regex-list)
-                     lnk)
-                 (while (and (not lnk) regexes)
-                   (goto-char (point-min))
-                   (when (re-search-forward (pop regexes) nil t)
-                     (backward-char)
-                     (setq lnk (read (current-buffer)))))
-                 (when lnk
-                   (setq link lnk))))
-              ((progn
-                 (goto-char (point-min))
-                 (when (re-search-forward "^Content-Type: image/\\(.*\\)$")
-                   (setq ext (match-string 1)))))
-              (t
-               (error "Link %s does not point to an image; unaliasing failed" link)))))
-    (let ((filename
-           (cond ((eq org-download-method 'attach)
-                  (let ((org-download-image-dir (progn (require 'org-attach)
-                                                       (org-attach-dir t)))
-                        org-download-heading-lvl)
-                    (org-download--fullname link ext)))
-                 ((fboundp org-download-method)
-                  (funcall org-download-method link))
-                 (t
-                  (org-download--fullname link ext)))))
-      (setq org-download-path-last-file filename)
-      (when (image-type-from-file-name filename)
-        (org-download--image link filename)
-        (when (eq major-mode 'org-mode)
-          (when (eq org-download-method 'attach)
-            (org-attach-attach filename nil 'none))
-          (org-download-insert-link link filename))
-        (when (and (eq org-download-delete-image-after-download t)
-                   (not (url-handler-file-remote-p (current-kill 0))))
-          (delete-file link delete-by-moving-to-trash))))))
+  (let* ((link-and-ext (org-download--parse-link link))
+         (filename
+          (cond ((and (eq major-mode 'org-mode) (eq org-download-method 'attach))
+                 (let ((org-download-image-dir (org-attach-dir t))
+                       org-download-heading-lvl)
+                   (apply #'org-download--fullname link-and-ext)))
+                ((fboundp org-download-method)
+                 (funcall org-download-method link))
+                (t
+                 (apply #'org-download--fullname link-and-ext)))))
+    (setq org-download-path-last-file filename)
+    (org-download--image link filename)
+    (when (org-download-org-mode-p)
+      (when (eq org-download-method 'attach)
+        (org-attach-attach filename nil 'none))
+      (org-download-insert-link link filename))
+    (when (and (eq org-download-delete-image-after-download t)
+               (not (url-handler-file-remote-p (current-kill 0))))
+      (delete-file link delete-by-moving-to-trash))))
 
 (defun org-download-rename-at-point ()
   "Rename image at point."
@@ -515,6 +593,8 @@ It's inserted before the image link and is used to annotate it.")
   (save-excursion
     (move-beginning-of-line nil)
     (looking-at "#\\+DOWNLOADED:")))
+
+(defvar org-link-any-re)
 
 (defun org-download-delete ()
   "Delete inline image link on current line, and the file that it points to."
@@ -589,7 +669,7 @@ When TIMES isn't nil, delete only TIMES links."
 (defun org-download-dnd (uri action)
   "When in `org-mode' and URI points to image, download it.
 Otherwise, pass URI and ACTION back to dnd dispatch."
-  (cond ((eq major-mode 'org-mode)
+  (cond ((org-download-org-mode-p)
          (condition-case nil
              (org-download-image uri)
            (error
@@ -606,7 +686,7 @@ Otherwise, pass URI and ACTION back to dnd dispatch."
   (org-download-image uri))
 
 (defun org-download-dnd-base64 (uri _action)
-  (when (eq major-mode 'org-mode)
+  (when (org-download-org-mode-p)
     (when (string-match "^data:image/png;base64," uri)
       (let* ((me (match-end 0))
              (filename (org-download--fullname
