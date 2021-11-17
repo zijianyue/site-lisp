@@ -1,6 +1,6 @@
 Windows Registry Editor Version 5.00
 
 [HKEY_CLASSES_ROOT\AllFilesystemObjects\Shell\GNU Emacs\command]
-@="\"d:\\Emacs\\bin\\emacsclientw.exe\" -n -a \"d:\\Emacs\\bin\\runemacs.exe\" \"%1\""
+@="\"d:\\emacs\\bin\\emacsclientw.exe\" -n -a \"d:\\emacs\\bin\\runemacs.exe\" \"%1\""
 [HKEY_CURRENT_USER\Software\GNU\Emacs]
-"Emacs.Geometry"="80x32+300+0"
+"Emacs.Geometry"="90x34+500+200"
