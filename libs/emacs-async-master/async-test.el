@@ -1,27 +1,24 @@
-;;; async-test.el --- async.el-related tests
+;;; async-test.el --- async.el-related tests  -*- lexical-binding:t -*-
 
-;; Copyright (C) 2012-2016 Free Software Foundation, Inc.
+;; Copyright (C) 2012-2022 Free Software Foundation, Inc.
 
 ;; Author: John Wiegley <jwiegley@gmail.com>
 ;; Created: 10 Jul 2012
-;; Version: 1.0
 ;; Keywords: async
 ;; X-URL: https://github.com/jwiegley/emacs-async
 
-;; This program is free software; you can redistribute it and/or
-;; modify it under the terms of the GNU General Public License as
-;; published by the Free Software Foundation; either version 2, or (at
-;; your option) any later version.
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
 
-;; This program is distributed in the hope that it will be useful, but
-;; WITHOUT ANY WARRANTY; without even the implied warranty of
-;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-;; General Public License for more details.
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs; see the file COPYING.  If not, write to the
-;; Free Software Foundation, Inc., 59 Temple Place - Suite 330,
-;; Boston, MA 02111-1307, USA.
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -31,9 +28,6 @@
 
 (require 'async)
 
-
-(eval-when-compile
-  (require 'cl))
 
 (defun async-test-1 ()
   (interactive)
@@ -92,20 +86,19 @@
   (message "Starting async-test-4...done"))
 
 (defun async-test-5 ()
+  "Test communication between parent and child, both ways."
   (interactive)
   (message "Starting async-test-5...")
   (let ((proc
          (async-start
           ;; What to do in the child process
           (lambda ()
-            (message "This is a test, sending message")
+            ;; Send message to parent
             (async-send :hello "world")
-            ;; wait for a message
+            ;; wait for a message from parent
             (let ((msg (async-receive)))
-              (message "Child got message: %s"
-                       (plist-get msg :goodbye)))
-            (sleep-for 3)
-            222)
+              (sleep-for 3)
+              (plist-get msg :result)))
 
           ;; What to do when it finishes
           (lambda (result)
@@ -114,7 +107,8 @@
                          (plist-get result :hello))
               (message "Async process done, result should be 222: %s"
                        result))))))
-    (async-send proc :goodbye "everyone"))
+    ;; Send message to child process
+    (async-send proc :result "222"))
   (message "Starting async-test-5...done"))
 
 (defun async-test-6 ()
@@ -130,11 +124,6 @@
    (lambda (result)
      (message "Async process done: %s" result))))
 
-
 (provide 'async-test)
 
 ;;; async-test.el ends here
-
-;; Local Variables:
-;; no-byte-compile: t
-;; End:

@@ -810,12 +810,12 @@ selection criteria for filtering the lists."
 
   (overlay-recenter (point))
   (cond ((equal 'forward direction)
-         (cons nil (remq nil (mapcar predicate (cdr (overlay-lists))))))
+         (cons nil (remq nil (mapcar predicate (overlays-in (point) (point-max))))))
         ((equal 'backward direction)
-         (cons (remq nil (mapcar predicate (car (overlay-lists)))) nil))
+         (cons (remq nil (mapcar predicate (overlays-in (point) (point-max)))) nil))
         (t
-         (cons (remq nil (mapcar predicate (car (overlay-lists))))
-               (remq nil (mapcar predicate (cdr (overlay-lists))))))))
+         (cons (remq nil (mapcar predicate (overlays-in (point) (point-max))))
+               (remq nil (mapcar predicate (overlays-in (point) (point-max))))))))
 
 (defun bm-overlay-in-buffer()
   "overlays in current buffer"
