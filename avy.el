@@ -395,7 +395,7 @@ SEQ-LEN is how many elements of KEYS it takes to identify a match."
 
 (defvar avy-command nil
   "Store the current command symbol.
-E.g. 'avy-goto-line or 'avy-goto-char.")
+E.g. `avy-goto-line' or `avy-goto-char'.")
 
 (defun avy-tree (lst keys)
   "Coerce LST into a balanced tree.
@@ -455,6 +455,9 @@ KEYS is the path from the root of `avy-tree' to LEAF."
 (defvar avy-action nil
   "Function to call at the end of select.")
 
+(defvar avy-action-oneshot nil
+  "Function to call once at the end of select.")
+
 (defun avy-handler-default (char)
   "The default handler for a bad CHAR."
   (let (dispatch)
@@ -494,8 +497,8 @@ KEYS is the path from the root of `avy-tree' to LEAF."
   "Store the current incomplete path during `avy-read'.")
 
 (defun avy-mouse-event-window (char)
-  "If CHAR is a mouse event, return the window of the event if any or the selected window.
-Return nil if not a mouse event."
+  "Return the window of mouse event CHAR if any or the selected window.
+Return nil if CHAR is not a mouse event."
   (when (mouse-event-p char)
     (cond ((windowp (posn-window (event-start char)))
            (posn-window (event-start char)))
@@ -835,11 +838,11 @@ Set `avy-style' according to COMMAND as well."
            avy-last-candidates))
          (min-dist
           (apply #'min
-                 (mapcar (lambda (x) (abs (- (caar x) (point)))) avy-last-candidates)))
+                 (mapcar (lambda (x) (abs (- (if (listp (car x)) (caar x) (car x)) (point)))) avy-last-candidates)))
          (pos
           (cl-position-if
            (lambda (x)
-             (= (- (caar x) (point)) min-dist))
+             (= (- (if (listp (car x)) (caar x) (car x)) (point)) min-dist))
            avy-last-candidates)))
     (funcall advancer pos avy-last-candidates)))
 
@@ -849,7 +852,8 @@ Set `avy-style' according to COMMAND as well."
   (avy--last-candidates-cycle
    (lambda (pos lst)
      (when (> pos 0)
-       (goto-char (caar (nth (1- pos) lst)))))))
+       (let ((candidate (nth (1- pos) lst)))
+         (goto-char (if (listp (car candidate)) (caar candidate) (car candidate))))))))
 
 (defun avy-next ()
   "Go to the next candidate of the last `avy-read'."
@@ -857,7 +861,8 @@ Set `avy-style' according to COMMAND as well."
   (avy--last-candidates-cycle
    (lambda (pos lst)
      (when (< pos (1- (length lst)))
-       (goto-char (caar (nth (1+ pos) lst)))))))
+       (let ((candidate (nth (1+ pos) lst)))
+         (goto-char (if (listp (car candidate)) (caar candidate) (car candidate))))))))
 
 ;;;###autoload
 (defun avy-process (candidates &optional overlay-fn cleanup-fn)
@@ -890,10 +895,11 @@ multiple OVERLAY-FN invocations."
       (t
        (funcall avy-pre-action res)
        (setq res (car res))
-       (funcall (or avy-action 'avy-action-goto)
-                (if (consp res)
-                    (car res)
-                  res))
+       (let ((action (or avy-action avy-action-oneshot 'avy-action-goto)))
+         (funcall action
+                  (if (consp res)
+                      (car res)
+                    res)))
        res))))
 
 (define-obsolete-function-alias 'avy--process 'avy-process
@@ -929,14 +935,14 @@ multiple OVERLAY-FN invocations."
         (null (assoc invisible buffer-invisibility-spec)))))
 
 (defun avy--next-visible-point ()
-  "Return the next closest point without 'invisible property."
+  "Return the next closest point without `invisible' property."
   (let ((s (point)))
     (while (and (not (= (point-max) (setq s (next-char-property-change s))))
                 (not (avy--visible-p s))))
     s))
 
 (defun avy--next-invisible-point ()
-  "Return the next closest point with 'invisible property."
+  "Return the next closest point with `invisible' property."
   (let ((s (point)))
     (while (and (not (= (point-max) (setq s (next-char-property-change s))))
                 (avy--visible-p s)))
@@ -1015,10 +1021,11 @@ COMPOSE-FN is a lambda that concatenates the old string at BEG with STR."
              (os-line-prefix (get-text-property 0 'line-prefix old-str))
              (os-wrap-prefix (get-text-property 0 'wrap-prefix old-str))
              other-ol)
-        (when os-line-prefix
-          (add-text-properties 0 1 `(line-prefix ,os-line-prefix) str))
-        (when os-wrap-prefix
-          (add-text-properties 0 1 `(wrap-prefix ,os-wrap-prefix) str))
+        (unless (= (length str) 0)
+          (when os-line-prefix
+            (add-text-properties 0 1 `(line-prefix ,os-line-prefix) str))
+          (when os-wrap-prefix
+            (add-text-properties 0 1 `(wrap-prefix ,os-wrap-prefix) str)))
         (when (setq other-ol (cl-find-if
                               (lambda (o) (overlay-get o 'goto-address))
                               (overlays-at beg)))
@@ -1605,7 +1612,8 @@ Which one depends on variable `subword-mode'."
 (defvar visual-line-mode)
 
 (defcustom avy-indent-line-overlay nil
-  "When non-nil, `avy-goto-line' will display the line overlay next to the first non-whitespace character of each line."
+  "When non-nil, display line overlay next to the first non-whitespace character.
+This affects `avy-goto-line'."
   :type 'boolean)
 
 (defun avy--line-cands (&optional arg beg end bottom-up)
@@ -1658,6 +1666,7 @@ When BOTTOM-UP is non-nil, display avy candidates from top to bottom"
 (defvar linum-overlays)
 (defvar linum-format)
 (declare-function linum--face-width "linum")
+(declare-function linum-mode "linum")
 
 (define-minor-mode avy-linum-mode
   "Minor mode that uses avy hints for `linum-mode'."
