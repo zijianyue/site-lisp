@@ -5,7 +5,7 @@
 ;; Author: Robb Enzmann <robbenzmann@gmail.com>
 ;; Keywords: treesitter auto automatic major mode fallback convenience
 ;; URL: https://github.com/renzmann/treesit-auto.git
-;; Version: 0.6.6
+;; Version: 1.0.2
 ;; Package-Requires: ((emacs "29.0"))
 
 ;; This file is not part of GNU Emacs.
@@ -68,20 +68,6 @@ by manipulating the `treesit-auto-recipe-list' variable."
   :type '(alist :key-type symbol :value-type function)
   :group 'treesit)
 
-(defcustom treesit-auto-langs nil
-  "Language symbols that should be automatically installed.
-
-Setting this to a list of grammar symbols will modify the
-behavior of `treesit-auto-install-all' and the
-automatic/prompting behavior when visiting a buffer that has a
-tree-sitter mode available.  For example, when set to \\='(python
-rust go), then `treesit-auto-install-all' will only check and
-install those three grammars.  Likewise, we will only get
-automatic installation (or prompting, based on the value of
-`treesit-auto-install') when visiting a Python, Go, or Rust file."
-  :type '(repeat symbol)
-  :group 'treesit)
-
 (cl-defstruct treesit-auto-recipe
   "Emacs metadata for a tree-sitter language grammar."
   lang ts-mode remap requires url revision source-dir cc c++ ext)
@@ -120,9 +106,9 @@ automatic installation (or prompting, based on the value of
     ,(make-treesit-auto-recipe
       :lang 'clojure
       :ts-mode 'clojure-ts-mode
-      :remap 'clojure-mode
+      :remap '(clojure-mode clojurescript-mode clojurec-mode)
       :url "https://github.com/sogaiu/tree-sitter-clojure"
-      :ext "\\.clj\\'")
+      :ext "\\.cljc?s?d?\\'")
     ,(make-treesit-auto-recipe
       :lang 'cmake
       :ts-mode 'cmake-ts-mode
@@ -170,12 +156,14 @@ automatic installation (or prompting, based on the value of
       :lang 'go
       :ts-mode 'go-ts-mode
       :remap 'go-mode
+      :requires 'gomod
       :url "https://github.com/tree-sitter/tree-sitter-go"
       :ext "\\.go\\'")
     ,(make-treesit-auto-recipe
       :lang 'gomod
       :ts-mode 'go-mod-ts-mode
       :remap 'go-mod-mode
+      :requires 'go
       :url "https://github.com/camdencheek/tree-sitter-go-mod"
       :ext "go\\.mod\\'")
     ,(make-treesit-auto-recipe
@@ -221,7 +209,7 @@ automatic installation (or prompting, based on the value of
       :ts-mode 'kotlin-ts-mode
       :remap 'kotlin-mode
       :url "https://github.com/fwcd/tree-sitter-kotlin"
-      :ext "\\.kt\\'")
+      :ext "\\.kts?\\'")
     ,(make-treesit-auto-recipe
       :lang 'latex
       :ts-mode 'latex-ts-mode
@@ -232,20 +220,32 @@ automatic installation (or prompting, based on the value of
       :lang 'lua
       :ts-mode 'lua-ts-mode
       :remap 'lua-mode
-      :url "https://github.com/Azganoth/tree-sitter-lua"
+      :url "https://github.com/MunifTanjim/tree-sitter-lua"
       :ext "\\.lua\\'")
+    ,(make-treesit-auto-recipe
+      :lang 'magik
+      :ts-mode 'magik-ts-mode
+      :remap 'magik-mode
+      :url "https://github.com/krn-robin/tree-sitter-magik"
+      :ext "\\.magik\\'")
     ,(make-treesit-auto-recipe
       :lang 'make
       :ts-mode 'makefile-ts-mode
       :remap 'makefile-mode
       :url "https://github.com/alemuller/tree-sitter-make"
-      :ext "\\Makefile\\'")
+      :ext "\\([Mm]akefile\\|.*\\.\\(mk\\|make\\)\\)\\'")
     ,(make-treesit-auto-recipe
       :lang 'markdown
       :ts-mode 'markdown-ts-mode
       :remap '(poly-markdown-mode markdown-mode)
       :url "https://github.com/ikatyang/tree-sitter-markdown"
       :ext "\\.md\\'")
+    ,(make-treesit-auto-recipe
+      :lang 'nu
+      :ts-mode 'nushell-ts-mode
+      :remap 'nushell-mode
+      :url "https://github.com/nushell/tree-sitter-nu"
+      :ext "\\.nu\\'")
     ,(make-treesit-auto-recipe
       :lang 'proto
       :ts-mode 'protobuf-ts-mode
@@ -257,19 +257,19 @@ automatic installation (or prompting, based on the value of
       :ts-mode 'python-ts-mode
       :remap 'python-mode
       :url "https://github.com/tree-sitter/tree-sitter-python"
-      :ext "\\.py\\'")
+      :ext "\\.py[iw]?\\'")
     ,(make-treesit-auto-recipe
       :lang 'r
       :ts-mode 'r-ts-mode
-      :remap 'ess-r-mode
+      :remap 'ess-mode
       :url "https://github.com/r-lib/tree-sitter-r"
-      :ext "\\.(r|R)\\'")
+      :ext "\\.r\\'")
     ,(make-treesit-auto-recipe
       :lang 'ruby
       :ts-mode 'ruby-ts-mode
       :remap 'ruby-mode
       :url "https://github.com/tree-sitter/tree-sitter-ruby"
-      :ext "\\.rb\\'")
+      :ext "\\(?:\\.\\(?:rbw?\\|ru\\|rake\\|thor\\|jbuilder\\|rabl\\|gemspec\\|podspec\\)\\|/\\(?:Gem\\|Rake\\|Cap\\|Thor\\|Puppet\\|Berks\\|Brew\\|Vagrant\\|Guard\\|Pod\\)file\\)\\'")
     ,(make-treesit-auto-recipe
       :lang 'rust
       :ts-mode 'rust-ts-mode
@@ -285,6 +285,7 @@ automatic installation (or prompting, based on the value of
     ,(make-treesit-auto-recipe
       :lang 'tsx
       :ts-mode 'tsx-ts-mode
+      :remap '(typescript-tsx-mode)
       :requires 'typescript
       :url "https://github.com/tree-sitter/tree-sitter-typescript"
       :revision "master"
@@ -320,6 +321,20 @@ automatic installation (or prompting, based on the value of
       :url "https://github.com/alemuller/tree-sitter-vhdl"
       :ext "\\.vhdl?\\'")
     ,(make-treesit-auto-recipe
+      :lang 'wat
+      :ts-mode 'wat-ts-mode
+      :remap 'wat-mode
+      :url "https://github.com/wasm-lsp/tree-sitter-wasm"
+      :source-dir "wat/src"
+      :ext "\\.wat\\'")
+    ,(make-treesit-auto-recipe
+      :lang 'wast
+      :ts-mode 'wat-ts-wast-mode
+      :remap 'wat-mode
+      :url "https://github.com/wasm-lsp/tree-sitter-wasm"
+      :source-dir "wast/src"
+      :ext "\\.wast\\'")
+    ,(make-treesit-auto-recipe
       :lang 'yaml
       :ts-mode 'yaml-ts-mode
       :remap 'yaml-mode
@@ -327,24 +342,41 @@ automatic installation (or prompting, based on the value of
       :ext "\\.ya?ml\\'"))
   "Map each tree-sitter lang to Emacs metadata.")
 
-(defun treesit-auto--maybe-install-grammar ()
-  "Try to install the grammar matching the current major-mode.
+(defcustom treesit-auto-langs (seq-map #'treesit-auto-recipe-lang treesit-auto-recipe-list)
+  "Language symbols that should be automatically installed.
 
-If the tree-sitter grammar is missing for the current major mode,
-this will silently fail, automatically install the grammar, or
-prompt the user about automatic installation, depending on the
-value of `treesit-auto-install'.  If installation of the grammar
-is successful, activate the tree-sitter major mode."
-  (when-let* ((not-ready (not (treesit-auto--ready-p major-mode)))
-              (recipe (treesit-auto--get-mode-recipe))
+Setting this to a list of grammar symbols will modify the
+behavior of `treesit-auto-install-all' and the
+automatic/prompting behavior when visiting a buffer that has a
+tree-sitter mode available.  For example, when set to \\='(python
+rust go), then `treesit-auto-install-all' will only check and
+install those three grammars.  Likewise, we will only get
+automatic installation (or prompting, based on the value of
+`treesit-auto-install') when visiting a Python, Go, or Rust file."
+  :type '(repeat symbol)
+  :group 'treesit)
+
+(defun treesit-auto--maybe-install-grammar ()
+  "Try to install the grammar matching the current file extension.
+
+If the tree-sitter grammar is missing for the current file type, this will
+silently fail, automatically install the grammar, or prompt the user about
+automatic installation, depending on the value of `treesit-auto-install'.  If
+installation of the grammar is successful, activate the tree-sitter major mode."
+  (when-let* ((recipe (treesit-auto--get-mode-recipe))
               (ts-mode (treesit-auto-recipe-ts-mode recipe))
+              (not-ready (not (treesit-auto--ready-p ts-mode)))
               (ts-mode-exists (fboundp ts-mode))
-              (lang (treesit-auto-recipe-lang recipe)))
-    ;; install required grammars
-    (dolist (lang (ensure-list (treesit-auto-recipe-requires recipe)))
-      (treesit-auto--prompt-to-install-package lang))
-    (when (treesit-auto--prompt-to-install-package lang)
-      (funcall ts-mode))))
+              (lang (treesit-auto-recipe-lang recipe))
+              (treesit-language-source-alist (treesit-auto--build-treesit-source-alist)))
+    (dolist (req-lang (ensure-list (treesit-auto-recipe-requires recipe)))
+      (treesit-auto--prompt-to-install-package req-lang))
+    (treesit-auto--prompt-to-install-package lang)
+    (if (and (stringp buffer-file-name)
+             (file-exists-p buffer-file-name))
+        (revert-buffer nil t)
+      (when (treesit-auto--ready-p lang)
+        (funcall ts-mode)))))
 
 (defun treesit-auto--ready-p (mode)
   "Determine if MODE is tree-sitter ready.
@@ -375,27 +407,32 @@ Non-nil only if installation completed without any errors."
     ;; work in the future.
     (not (treesit-install-language-grammar lang))))
 
-(defvar treesit-auto-opt-out-list
-  nil
-  "Language symbols to avoid when using `treesit-auto-install-all'.
-
-This variable is ignored if `treesit-auto-langs' is non-nil.")
-
 (defun treesit-auto--get-mode-recipe (&optional mode)
   "Look up the recipe for MODE.  If MODE is nil, use the current `major-mode'."
   (let ((mode (or mode major-mode)))
-    (cl-loop for recipe in treesit-auto-recipe-list
+    (cl-loop for recipe in (treesit-auto--selected-recipes)
              if (memq
                  mode
                  (cons (treesit-auto-recipe-ts-mode recipe)
                        (ensure-list (treesit-auto-recipe-remap recipe))))
              return recipe)))
 
+(defun treesit-auto--get-buffer-recipe ()
+  "Look up the recipe for the current buffer using its extension."
+  (seq-find (lambda (r) (string-match (treesit-auto-recipe-ext r) (buffer-name)))
+            (treesit-auto--selected-recipes)))
+
+(defun treesit-auto--selected-recipes ()
+  "Filter `treesit-auto-recipe-list' for members of `treesit-auto-langs'."
+  (seq-filter
+   (lambda (r) (memq (treesit-auto-recipe-lang r) treesit-auto-langs))
+   treesit-auto-recipe-list))
+
 (defun treesit-auto--build-major-mode-remap-alist ()
   "Construct `major-mode-remap-alist' using all known recipes."
   (append major-mode-remap-alist
           (let ((remap-alist '()))
-            (cl-loop for recipe in treesit-auto-recipe-list
+            (cl-loop for recipe in (treesit-auto--selected-recipes)
                      for ts-mode = (treesit-auto-recipe-ts-mode recipe)
                      when (treesit-auto--ready-p ts-mode)
                      do (dolist (remap (ensure-list (treesit-auto-recipe-remap recipe)))
@@ -405,7 +442,7 @@ This variable is ignored if `treesit-auto-langs' is non-nil.")
 (defun treesit-auto--build-treesit-source-alist ()
   "Construct the `treesit-language-source-alist' using all known recipes."
   (append treesit-language-source-alist
-          (cl-loop for recipe in treesit-auto-recipe-list
+          (cl-loop for recipe in (treesit-auto--selected-recipes)
                    collect (cons (treesit-auto-recipe-lang recipe)
                                  `(,(treesit-auto-recipe-url recipe)
                                    ,(treesit-auto-recipe-revision recipe)
@@ -420,12 +457,8 @@ See `treesit-auto-langs' and `treesit-auto-install' for
 how to modify the behavior of this function."
   (interactive)
   (when-let* ((treesit-language-source-alist (treesit-auto--build-treesit-source-alist))
-              (to-install (or treesit-auto-langs
-                              (seq-filter
-                               (lambda (lang) (not (treesit-ready-p lang t)))
-                               (cl-set-difference
-                                (mapcar 'car treesit-language-source-alist)
-                                treesit-auto-opt-out-list))))
+              (to-install (seq-filter (lambda (lang) (not (treesit-ready-p lang t)))
+                                      treesit-auto-langs))
               (prompt (format "The following tree-sitter grammars are/were missing:\n%s\n"
                               (mapconcat 'symbol-name to-install "\n"))))
     ;; TODO QOL - it would be nice if this messaged what was installed or at
@@ -453,7 +486,7 @@ how to modify the behavior of this function."
   ;; non emacs core ts-modes might autoload and would be
   ;; nice to also prompt for grammar installation
   (let ((modes '()))
-    (cl-loop for recipe in treesit-auto-recipe-list
+    (cl-loop for recipe in (treesit-auto--selected-recipes)
              do (push (treesit-auto-recipe-ts-mode recipe) modes)
              do (dolist (mode (ensure-list (treesit-auto-recipe-remap recipe)))
                   (push mode modes))
@@ -480,20 +513,49 @@ how to modify the behavior of this function."
 
 (defun treesit-auto--on ()
   "Turn `treesit-auto-mode' on."
-  (setq-local treesit-language-source-alist
-              (treesit-auto--build-treesit-source-alist))
   (treesit-auto--maybe-install-grammar))
 
-(defun treesit-auto-add-to-auto-mode-alist ()
-  "Register `auto-mode-alist' entries for ready tree-sitter recipes."
-  (let ((installed-recipes
-         (seq-filter
-          (lambda (recipe) (treesit-ready-p (treesit-auto-recipe-lang recipe) t))
-          treesit-auto-recipe-list)))
-    (dolist (recipe installed-recipes)
-      (add-to-list
-       'auto-mode-alist
-       (cons (treesit-auto-recipe-ext recipe) (treesit-auto-recipe-ts-mode recipe))))))
+(defun treesit-auto--recipe-ready-p (recipe)
+  "Non-nil if the language associated with RECIPE is tree-sitter ready."
+  (treesit-auto--ready-p (treesit-auto-recipe-ts-mode recipe)))
+
+(defun treesit-auto--filter-recipes-with-langs (langs recipes)
+  "Filter RECIPES down to only those corresponding to LANGS."
+  (seq-filter
+   (lambda (r) (and (member (treesit-auto-recipe-lang r) langs)
+                    (fboundp (treesit-auto-recipe-ts-mode r))))
+   recipes))
+
+(defun treesit-auto-add-to-auto-mode-alist (&optional langs)
+  "Register tree-sitter modes in `auto-mode-alist'.
+
+When the optional argument LANGS is nil (the default), then this
+function adds every tree-sitter mode that satisfies
+`treesit-ready-p' to `auto-mode-alist'.
+
+If LANGS is `all', then every tree-sitter mode available to
+Emacs will be added to `auto-mode-alist', regardless of whether
+it satisfies `treesit-ready-p'.  For instance, Emacs 29.1 ships
+with `rust-ts-mode', so \\=(treesit-auto-add-to-auto-mode-alist
+\\='all\\=) would cause Emacs to load a Rust file in `rust-ts-mode',
+rather than `fundamental-mode'.
+
+If LANGS is a list, then only the listed languages will be added
+to `auto-mode-alist'.  The symbols in LANGS should correspond to
+the `:lang' recipe argument for `treesit-auto-recipe-list', such
+as `python', `rust', `go', etc.  The `treesit-auto-langs'
+variable takes priority over this argument.  If a language is
+missing from `treesit-auto-langs', then it will not be added to
+`auto-mode-alist', even if it is listed in LANGS."
+  (let* ((selected-recipes (treesit-auto--selected-recipes))
+         (recipes (cond ((eq langs 'all) (seq-filter (lambda (r) (fboundp (treesit-auto-recipe-ts-mode r)))
+                                                     selected-recipes))
+                        ;; See https://github.com/renzmann/treesit-auto/pull/67 for why we have (and langs (listp langs)) here
+                        ((and langs (listp langs)) (treesit-auto--filter-recipes-with-langs langs selected-recipes))
+                        (t (seq-filter #'treesit-auto--recipe-ready-p selected-recipes)))))
+    (dolist (r recipes)
+      (add-to-list 'auto-mode-alist
+                   (cons (treesit-auto-recipe-ext r) (treesit-auto-recipe-ts-mode r))))))
 
 (provide 'treesit-auto)
 ;;; treesit-auto.el ends here
