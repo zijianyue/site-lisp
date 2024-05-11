@@ -84,6 +84,10 @@
 (defface eldoc-box-body '((t . nil))
   "Body face used in documentation childframe.")
 
+(defface eldoc-box-markdown-separator '((t . ( :strike-through t
+                                               :height 0.4)))
+  "Face for the separator line in Markdown.")
+
 (defcustom eldoc-box-lighter " ELDOC-BOX"
   "Mode line lighter for all eldoc-box modes.
 If the value is nil, no lighter is displayed."
@@ -146,7 +150,8 @@ This separator is used for the documentation shown in
     (drag-internal-border . t)
     (no-special-glyphs . t)
     (desktop-dont-save . t)
-    (tab-bar-lines . 0))
+    (tab-bar-lines . 0)
+    (tab-bar-lines-keep-state . 1))
   "Frame parameters used to create the frame.")
 
 (defcustom eldoc-box-max-pixel-width 800
@@ -722,8 +727,7 @@ childframe."
          (prop-match-beginning prop)
          (prop-match-end prop)
          `( display ,eldoc-box--markdown-separator-display-props
-            face ( :strike-through t
-                   :height 0.4)))))))
+            face eldoc-box-markdown-separator))))))
 
 (defun eldoc-box--replace-en-space ()
   "Display the en spaces in documentation as regular spaces."

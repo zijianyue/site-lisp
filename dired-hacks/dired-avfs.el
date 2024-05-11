@@ -7,7 +7,7 @@
 ;; Keywords: files
 ;; Version: 0.0.1
 ;; Created: 14th February 2014
-;; Package-requires: ((dash "2.5.0") (dired-hacks-utils "0.0.1"))
+;; Package-Requires: ((dash "2.5.0") (dired-hacks-utils "0.0.1"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -69,14 +69,14 @@
 
 For example, this allows the user to open files via avfs from
 dired, but not from `find-file'."
-  :type '(repeat symbol)
+  :type '(repeat function)
   :group 'dired-avfs)
 
 (defcustom dired-avfs-file-size-threshold 100
   "Ask before opening files if their size exceeds this setting.
 
 The value is in megabytes."
-  :type 'integer
+  :type 'number
   :group 'dired-avfs)
 
 (defun dired-avfs--archive-filename (filename)

@@ -6,7 +6,7 @@
 ;; Maintainer: Matúš Goljer <matus.goljer@gmail.com>
 ;; Version: 1.1.0
 ;; Created: 15th July 2017
-;; Package-requires: ((dash "2.10.0") (f "0.19.0") (dired-hacks-utils "0.0.1"))
+;; Package-Requires: ((dash "2.10.0") (f "0.19.0") (dired-hacks-utils "0.0.1"))
 ;; Keywords: files
 
 ;; This program is free software; you can redistribute it and/or
@@ -78,6 +78,11 @@
   :type 'boolean
   :group 'dired-collapse)
 
+(defcustom dired-collapse-fontify t
+  "If non-nil, fontify with a shaded overlay."
+  :type 'boolean
+  :group 'dired-collapse)
+
 ;;;###autoload
 (define-minor-mode dired-collapse-mode
   "Toggle collapsing of unique nested paths in Dired."
@@ -135,25 +140,29 @@ filename (for example when the final directory is empty)."
       (save-excursion
         (goto-char (point-min))
         (while (not (eobp))
-          (when (and (looking-at-p dired-re-dir)
-                     (not (member (dired-utils-get-filename 'no-dir) (list "." "..")))
-                     (not (eolp)))
-            (let ((path (dired-utils-get-filename))
-                  files)
-              (while (and (file-directory-p path)
-                          (file-accessible-directory-p path)
-                          (setq files (f-entries path))
-                          (= 1 (length files)))
-                (setq path (car files)))
-              (if (and (not files)
-                       (equal path (dired-utils-get-filename)))
-                  (dired-collapse--create-ov 'to-eol)
-                (setq path (s-chop-prefix (dired-current-directory) path))
-                (when (string-match-p "/" path)
-                  (let ((default-directory (dired-current-directory)))
-                    (dired-collapse--replace-file path))
-                  (dired-insert-set-properties (line-beginning-position) (line-end-position))
-                  (dired-collapse--create-ov (= 0 (length files)))))))
+          (when-let ((filename-no-dir (dired-utils-get-filename 'no-dir)))
+            (when (and (looking-at-p dired-re-dir)
+                       (not (member filename-no-dir (list "." "..")))
+                       (not (eolp)))
+              (let ((path (dired-utils-get-filename))
+                    files)
+                (while (and (file-directory-p path)
+                            (file-accessible-directory-p path)
+                            (f-readable? path)
+                            (setq files (f-entries path))
+                            (= 1 (length files)))
+                  (setq path (car files)))
+                (if (and (not files)
+                         (equal path (dired-utils-get-filename)))
+                    (when dired-collapse-fontify
+                      (dired-collapse--create-ov 'to-eol))
+                  (setq path (s-chop-prefix (dired-current-directory) path))
+                  (when (string-match-p "/" path)
+                    (let ((default-directory (dired-current-directory)))
+                      (dired-collapse--replace-file path))
+                    (dired-insert-set-properties (line-beginning-position) (line-end-position))
+                    (when dired-collapse-fontify
+                      (dired-collapse--create-ov (= 0 (length files)))))))))
           (forward-line 1))))))
 
 (provide 'dired-collapse)

@@ -7,7 +7,7 @@
 ;; Keywords: files
 ;; Version: 0.0.1
 ;; Created: 25th February 2014
-;; Package-requires: ((dash "2.5.0") (dired-hacks-utils "0.0.1"))
+;; Package-Requires: ((dash "2.5.0") (dired-hacks-utils "0.0.1"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -127,13 +127,13 @@ depth---that creates the prefix."
 
 (defcustom dired-subtree-cycle-depth 3
   "Default depth expanded by `dired-subtree-cycle'."
-  :type 'integer
+  :type 'natnum
   :group 'dired-subtree)
 
 (defcustom dired-subtree-ignored-regexp
   (concat "^" (regexp-opt vc-directory-exclusion-list) "$")
   "Matching directories will not be expanded in `dired-subtree-cycle'."
-  :type 'string
+  :type 'regexp
   :group 'dired-subtree)
 
 (defgroup dired-subtree-faces ()
@@ -540,6 +540,7 @@ Return a string suitable for insertion in `dired' buffer."
       (goto-char beg)
       (dired-move-to-filename)
       (read-only-mode 1)
+      (when (bound-and-true-p dired-filter-mode) (dired-filter-mode 1))
       (run-hooks 'dired-subtree-after-insert-hook))))
 
 ;;;###autoload
