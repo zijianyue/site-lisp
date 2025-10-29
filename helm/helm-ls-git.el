@@ -1,10 +1,11 @@
-;;; helm-ls-git.el --- list git files. -*- lexical-binding: t -*-
+;;; helm-ls-git.el --- The git project manager for helm. -*- lexical-binding: t -*-
 
-;; Copyright (C) 2012 ~ 2023 Thierry Volpiatto
+;; Copyright (C) 2012 ~ 2025 Thierry Volpiatto
 
 ;; Package-Requires: ((helm "3.9.5") (emacs "25.3"))
 ;; URL: https://github.com/emacs-helm/helm-ls-git
 ;; Version: 1.9.4
+;; Keywords: helm, convenience, vc, files, buffers, completion, diff, log, git
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -150,12 +151,7 @@ See Issue #52."
 
 (defcustom helm-ls-git-log-max-commits "100"
   "Max number of commits to show in git log (git log -n option).
-NOTE: This reflects the number of candidates fetched and stored, not
-the number of candidates displayed which is relative to
-`helm-candidate-number-limit'.  IOW if `helm-candidate-number-limit'
-== 500 and `helm-ls-git-log-max-commits' == 600, only 500 candidates
-will be displayed but if you search for a candidate which is in the
-range 500/600 you will find it."
+This can be increased later with C-u <n> C-c C-u."
   :type 'string)
 
 (defcustom helm-ls-git-delete-branch-on-remote nil
@@ -168,6 +164,9 @@ This happen only when deleting a remote branch e.g. remotes/origin/foo."
 When non nil this disable `helm-move-to-line-cycle-in-source'."
   :type 'boolean)
 
+(defcustom helm-ls-git-with-editor-fill-column 70
+  "The `fill-column' value used in commits."
+  :type 'integer)
 
 (defgroup helm-ls-git-faces nil
   "Customize the appearance of helm-files."
@@ -251,6 +250,8 @@ When non nil this disable `helm-move-to-line-cycle-in-source'."
     (define-key map (kbd "C-c F") 'helm-ls-git-run-pull)
     (define-key map (kbd "C-c f") 'helm-ls-git-run-fetch)
     (define-key map (kbd "M-e") 'helm-ls-git-run-switch-to-shell)
+    (define-key map (kbd "C-c i") 'helm-ls-git-status-toggle-ignored)
+    (define-key map (kbd "C-c M") 'helm-ls-git-persistent-merge-branches)
     map))
 
 (defvar helm-ls-git-status-map
@@ -264,6 +265,7 @@ When non nil this disable `helm-move-to-line-cycle-in-source'."
     (define-key map (kbd "C-c Z") 'helm-ls-git-run-stash-snapshot)
     (define-key map (kbd "C-c R") 'helm-ls-git-run-status-revert-files)
     (define-key map (kbd "M-e") 'helm-ls-git-run-switch-to-shell)
+    (define-key map (kbd "C-c i") 'helm-ls-git-status-toggle-ignored)
     map))
 
 (defvar helm-ls-git-help-message
@@ -338,6 +340,15 @@ git log and you want more commits, use a numeric prefix arg with
 When scrolling down with an empty pattern, helm can increase
 automatically the number of candidates displayed when you reach
 end of buffer if `helm-ls-git-auto-refresh-at-eob' is non nil.
+
+If you search a specific commit by narrowing candidates list as usual
+but want to show all candidates around the selection you are interested
+in, you will have a problem because if you delete minibuffer input to
+show whole list you will loose your position, to solve this problem you
+have two solutions:
+- With cursor at end of minibuffer use C-u C-k.
+- Mark the selection and then delete minibuffer contents and find back the
+selection by hitting M-).
 
 NOTE: When searching in git log, Helm search in the candidates
 computed initially, this mean that when you have 100 candidates
@@ -452,6 +463,10 @@ and launch git-grep from there.
 
 See docstring of `helm-ls-git-ls-switches'.
 
+*** Show/disable icons in ls-git source
+
+Icons are displayed like in `helm-find-files' when `helm-ff-icon-mode' is enabled.
+
 ** Commands
 *** List files source
 
@@ -519,10 +534,6 @@ See docstring of `helm-ls-git-ls-switches'.
 ")
 
 
-;; Append visited files from `helm-source-ls-git' to `file-name-history'.
-(add-to-list 'helm-files-save-history-extra-sources "Git files")
-
-
 (defvar helm-ls-git-log-file nil) ; Set it for debugging.
 
 
@@ -566,15 +577,15 @@ See docstring of `helm-ls-git-ls-switches'.
            with untracking = (member "-o" helm-ls-git-ls-switches)
            for file in candidates
            for abs = (expand-file-name file root)
-           for disp = (if (and helm-ff-transformer-show-only-basename
-                               (not (string-match "[.]\\{1,2\\}\\'" file)))
-                          (helm-basename file) file)
+           for fname = (if (and helm-ff-transformer-show-only-basename
+                                (not (string-match "[.]\\{1,2\\}\\'" file)))
+                           (helm-basename file) file)
+           for disp = (propertize (if untracking (concat "? " fname) fname)
+                                  'face (if untracking
+                                            'helm-ls-git-untracked-face
+                                          'helm-ff-file))
            collect
-           (cons (propertize (if untracking (concat "? " disp) disp)
-                             'face (if untracking
-                                       'helm-ls-git-untracked-face
-                                     'helm-ff-file))
-                 abs)))
+           (cons (helm-ff-prefix-filename disp abs) abs)))
 
 (defun helm-ls-git-sort-fn (candidates _source)
   "Transformer for sorting candidates."
@@ -622,7 +633,7 @@ See docstring of `helm-ls-git-ls-switches'.
                       (lambda (_candidate)
                         (funcall helm-ls-git-status-command
                                  (helm-default-directory)))
-                      "Git Log" 'helm-ls-git-show-log-for-file
+                      "Git Log for file" 'helm-ls-git-show-log-for-file
                       "Switch to shell" 'helm-ls-git-switch-to-shell
                       "Git grep files (`C-u' only current directory)"
                       'helm-ls-git-grep
@@ -809,8 +820,11 @@ See docstring of `helm-ls-git-ls-switches'.
       (kill-buffer "*git log diff*"))
     (helm :sources (helm-build-in-buffer-source "Git log"
                      :header-name (lambda (sname)
-                                    (format "%s (%s)"
-                                            sname (substring-no-properties name)))
+                                    (format "%s (%s:%s)"
+                                            sname (substring-no-properties name)
+                                            (if file
+                                                (file-relative-name file)
+                                              "All files")))
                      :init (lambda ()
                              (helm-init-candidates-in-buffer 'global
                                (helm-ls-git-log
@@ -827,8 +841,10 @@ See docstring of `helm-ls-git-ls-switches'.
                                       helm-ls-git-log--last-number-commits "0"
                                       helm-ls-git-log--is-full nil))
                      :help-message 'helm-ls-git-help-message
-                     :action '(("Show commit" . helm-ls-git-log-show-commit)
-                               ("Find file at rev" . helm-ls-git-log-find-file)
+                     :action `(("Show commit" . helm-ls-git-log-show-commit)
+                               ("Find file at rev" . ,(lambda (candidate)
+                                                        (helm-ls-git-log-find-file-1
+                                                         candidate (and file (file-relative-name file)))))
                                ("Ediff file at revs" . helm-ls-git-ediff-file-at-revs)
                                ("Kill rev as short hash" .
                                 helm-ls-git-log-kill-short-hash)
@@ -853,8 +869,11 @@ See docstring of `helm-ls-git-ls-switches'.
                                           (default-value 'helm-move-to-line-cycle-in-source))
           :buffer "*helm-ls-git log*")))
 
+(defun helm-ls-git-log-get-rev (candidate)
+  (car (split-string candidate)))
+
 (defun helm-ls-git-log-show-commit-1 (candidate)
-  (let ((sha (car (split-string candidate))))
+  (let ((sha (helm-ls-git-log-get-rev candidate)))
     (with-current-buffer (get-buffer-create "*git log diff*")
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -870,7 +889,7 @@ See docstring of `helm-ls-git-ls-switches'.
       (display-buffer (current-buffer)))))
 
 (defun helm-ls-git-log-kill-short-hash (candidate)
-  (kill-new (car (split-string candidate))))
+  (kill-new (helm-ls-git-log-get-rev candidate)))
 
 (defun helm-ls-git-log-kill-long-hash (_candidate)
   (helm-ls-git-log-get-long-hash 'kill))
@@ -878,7 +897,7 @@ See docstring of `helm-ls-git-ls-switches'.
 (defun helm-ls-git-log-get-long-hash (&optional kill)
   (with-helm-buffer
     (let* ((cand (helm-get-selection nil 'withprop))
-           (short-hash (car (split-string cand)))
+           (short-hash (helm-ls-git-log-get-rev cand))
            str)
       (setq str
             (replace-regexp-in-string
@@ -895,7 +914,7 @@ See docstring of `helm-ls-git-ls-switches'.
 
 (defun helm-ls-git-log-format-patch-1 (&optional am)
   (let ((commits (cl-loop for c in (helm-marked-candidates)
-                          collect (car (split-string c))))
+                          collect (helm-ls-git-log-get-rev c)))
         range switches)
     (cond ((= 2 (length commits))
            ;; Using "..." makes a range from top marked (included) to
@@ -925,7 +944,7 @@ See docstring of `helm-ls-git-ls-switches'.
         (apply #'process-file "git" nil "*git format-patch*" nil switches)))))
 
 (defun helm-ls-git-log-reset-1 (hard-or-soft)
-  (let ((rev (car (split-string (helm-get-selection nil 'withprop))))
+  (let ((rev (helm-ls-git-log-get-rev (helm-get-selection nil 'withprop)))
         (arg (cl-case hard-or-soft
                (hard "--hard")
                (soft "--soft"))))
@@ -945,7 +964,7 @@ See docstring of `helm-ls-git-ls-switches'.
   (helm-ls-git-log-reset-1 'soft))
 
 (defun helm-ls-git-log-revert (_candidate)
-  (let ((rev (car (split-string (helm-get-selection nil 'withprop)))))
+  (let ((rev (helm-ls-git-log-get-rev (helm-get-selection nil 'withprop))))
     (helm-ls-git-with-editor "revert" rev)))
 
 (defun helm-ls-git-log-revert-continue (_candidate)
@@ -956,7 +975,7 @@ See docstring of `helm-ls-git-ls-switches'.
     (process-file "git" nil nil nil "revert" "--abort")))
 
 (defun helm-ls-git-log-checkout (_candidate)
-  (let ((rev (car (split-string (helm-get-selection nil 'withprop)))))
+  (let ((rev (helm-ls-git-log-get-rev (helm-get-selection nil 'withprop))))
     (helm-ls-git-checkout rev)))
 
 (defun helm-ls-git-log-show-commit (candidate)
@@ -967,36 +986,34 @@ See docstring of `helm-ls-git-ls-switches'.
 
 (defun helm-ls-git-log-find-file-1 (candidate &optional file buffer-only)
   (with-helm-default-directory (helm-default-directory)
-    (let* ((rev (substring-no-properties (car (split-string candidate))))
+    (let* ((rev (substring-no-properties (helm-ls-git-log-get-rev candidate)))
            (file (or file
                      (helm :sources (helm-build-in-buffer-source "Git cat-file"
                                       :data (helm-ls-git-list-files))
                            :buffer "*helm-ls-git cat-file*")))
            ;; Git command line needs 1234:lisp/foo.
-           (fname (concat rev ":" file))
+           (fname (and file (concat rev ":" file)))
            ;; Whereas the file created will be lisp/1234:foo.
-           (path (expand-file-name
-                  (concat (helm-basedir file) rev ":" (helm-basename file))
-                  (helm-ls-git-root-dir)))
+           (path (and file (expand-file-name
+                            (concat (helm-basedir file) rev ":" (helm-basename file))
+                            (helm-ls-git-root-dir))))
            str status buf)
-      (setq str (with-output-to-string
-                  (with-current-buffer standard-output
-                    (setq status (process-file
-                                  "git" nil t nil "cat-file" "-p" fname)))))
-      (if (zerop status)
-          (progn
-            (with-current-buffer (setq buf (find-file-noselect path))
-              (insert str)
-              ;; Prevent kill-buffer asking after ediff ends.
-              (set-buffer-modified-p (not buffer-only))
-              (goto-char (point-min))
-              (unless buffer-only
-                (save-buffer)))
-            (if buffer-only buf (find-file path)))
-        (error "No such file %s at %s" file rev)))))
-
-(defun helm-ls-git-log-find-file (candidate)
-  (helm-ls-git-log-find-file-1 candidate))
+      (when file
+        (setq str (with-output-to-string
+                    (with-current-buffer standard-output
+                      (setq status (process-file
+                                    "git" nil t nil "cat-file" "-p" fname)))))
+        (if (zerop status)
+            (progn
+              (with-current-buffer (setq buf (find-file-noselect path))
+                (insert str)
+                ;; Prevent kill-buffer asking after ediff ends.
+                (set-buffer-modified-p (not buffer-only))
+                (goto-char (point-min))
+                (unless buffer-only
+                  (save-buffer)))
+              (if buffer-only buf (find-file path)))
+          (error "No such file %s at %s" file rev))))))
 
 (defun helm-ls-git-ediff-file-at-revs (_candidate)
   (let* ((marked (helm-marked-candidates))
@@ -1004,8 +1021,8 @@ See docstring of `helm-ls-git-ls-switches'.
                 (helm-ls-git-oneline-log (helm-ls-git--branch))))
          buf1 buf2 file)
     (when tip
-      (cl-assert (not (string= (car (split-string tip))
-                               (car (split-string (car marked)))))
+      (cl-assert (not (string= (helm-ls-git-log-get-rev tip)
+                               (helm-ls-git-log-get-rev (car marked))))
                  nil "Can't ediff a file at same revision"))
     (setq file (helm :sources (helm-build-in-buffer-source "Git cat-file"
                                 :data (helm-ls-git-list-files))
@@ -1017,7 +1034,7 @@ See docstring of `helm-ls-git-ls-switches'.
 
 (defun helm-ls-git-log-cherry-pick (_candidate)
   (let* ((commits (cl-loop for c in (helm-marked-candidates)
-                           collect (car (split-string c)) into revs
+                           collect (helm-ls-git-log-get-rev c) into revs
                            finally return (sort revs #'string-greaterp))))
     (with-helm-default-directory (helm-ls-git-root-dir
                                   (helm-default-directory))
@@ -1191,7 +1208,12 @@ object will be passed git rebase i.e. git rebase -i <hash>."
         (if (= (process-file "git" nil nil nil "merge" branch) 0)
             (progn (message "Branch %s merged successfully into %s" branch current)
                    (helm-ls-git-revert-buffers-in-project))
-          (message "failed to merge branch %s" branch))))))
+          (message "failed to merge branch %s" branch)))
+      (when helm-in-persistent-action (helm-force-update)))))
+
+(helm-make-persistent-command-from-action helm-ls-git-persistent-merge-branches
+    "Merge branches without quitting."
+  'merge-branches 'helm-ls-git-branches-merge)
 
 (defvar helm-ls-git-create-branch-source
   (helm-build-dummy-source "Create branch"
@@ -1230,25 +1252,34 @@ object will be passed git rebase i.e. git rebase -i <hash>."
 
 (defun helm-ls-git-push (_candidate)
   (with-helm-default-directory (helm-default-directory)
-    (let ((branch (helm-ls-git--branch))
-          pr tm)
-      (when (y-or-n-p (format "Really push branch `%s' on remote ?" branch))
+    (let* ((branch (helm-ls-git--branch))
+           (force (and helm-current-prefix-arg "FORCE "))
+           pr tm)
+      (when (y-or-n-p (format "Really %spush branch `%s' on remote ?"
+                              (if force force "") branch))
         (setq pr (make-progress-reporter
                   (format "Pushing branch `%s' on remote..." branch))
               tm (run-at-time 1 0.1 #'progress-reporter-update pr))
         (let ((proc (start-file-process
-                     "git" "*helm-ls-git push*" "git" "push" "origin" "HEAD")))
+                     "git" "*helm-ls-git push*" "git" "push" "-q" "origin"
+                     (format "%sHEAD" (if force "+" "")))))
+          (with-current-buffer (process-buffer proc) (erase-buffer))
+          (set-process-filter proc 'helm-ls-git--filter-process)
+          (save-selected-window
+            (display-buffer (process-buffer proc)))
           (set-process-sentinel
-           proc (lambda (_process event)
-                  (if (string= event "finished\n")
-                      (progress-reporter-done pr)
-                    (message "Failed to push branch `%s' on remote" branch))
-                  (cancel-timer tm))))))))
+           proc (lambda (process event)
+                  (let ((status (process-exit-status process)))
+                    (if (string= event "finished\n")
+                        (progress-reporter-done pr)
+                      (message "Failed to push branch `%s' on remote" branch))
+                    (when (= status 0)
+                      (quit-window t (get-buffer-window (process-buffer process))))
+                    (cancel-timer tm)))))))))
 
-(defun helm-ls-git-run-push ()
-  (interactive)
-  (with-helm-alive-p
-    (helm-exit-and-execute-action #'helm-ls-git-push)))
+(helm-make-command-from-action helm-ls-git-run-push
+    "Run `helm-ls-git-push' action."
+  'helm-ls-git-push)
 (put 'helm-ls-git-run-push 'no-helm-mx t)
 
 (defun helm-ls-git-remotes ()
@@ -1259,22 +1290,21 @@ object will be passed git rebase i.e. git rebase -i <hash>."
 
 (defun helm-ls-git--pull-or-fetch (command &rest args)
   (with-helm-default-directory (helm-default-directory)
-    (let* ((remote "origin")
-           (pcommand (capitalize command))
+    (let* ((pcommand (capitalize command))
+           (remote (if current-prefix-arg
+                       (helm-comp-read
+                        (format "%s from: " pcommand)
+                        (split-string
+                         (helm-ls-git-remotes)
+                         "\n")
+                        :allow-nest t)
+                     "origin"))
            (branch (helm-ls-git--branch))
            ;; A `C-g' in helm-comp-read will quit function as well.
-           (switches (if current-prefix-arg
-                         (append (list command)
-                                 args
-                                 (list (setq remote
-                                             (helm-comp-read
-                                              (format "%s from: " pcommand)
-                                              (split-string
-                                               (helm-ls-git-remotes)
-                                               "\n")
-                                              :allow-nest t)))
-                                 (list branch))
-                       (append (list command) args)))
+           (switches (append (list command)
+                             args
+                             (list remote)
+                             (list branch)))
            (pr (make-progress-reporter
                 (format "%sing from `%s/%s'..." pcommand remote branch)))
            (tm (run-at-time 1 0.1 (lambda () (progress-reporter-update pr))))
@@ -1351,8 +1381,9 @@ object will be passed git rebase i.e. git rebase -i <hash>."
                          helm-ls-git-branches-show-all)))
               (helm-init-candidates-in-buffer 'global data)))
     :candidate-transformer 'helm-ls-git-branches-transformer
+    :follow 'never
     :action-transformer (lambda (actions candidate)
-                          (cond ((string-match "\\`[*] detached\\|(.*)" candidate)
+                          (cond ((string-match "\\`\\* (.*" candidate)
                                  (append
                                   actions
                                   '(("Git rebase continue" .
@@ -1501,13 +1532,17 @@ object will be passed git rebase i.e. git rebase -i <hash>."
 
 (defun helm-ls-git-apply-patch (_candidate)
   (with-helm-default-directory (helm-default-directory)
-    (let ((patchs (helm-marked-candidates)))
-      (with-current-buffer-window "*git apply*" '(display-buffer-below-selected
-                                                  (window-height . fit-window-to-buffer)
-                                                  (preserve-size . (nil . t)))
+    (let ((patchs (helm-marked-candidates))
+          (buf "*git apply*")
+          status)
+      (with-current-buffer-window buf '(display-buffer-below-selected
+                                        (window-height . fit-window-to-buffer)
+                                        (preserve-size . (nil . t)))
           nil
-        (apply #'process-file "git" nil t t "apply" patchs)
-        (helm-ls-git-revert-buffers-in-project)))))
+          (setq status (apply #'process-file "git" nil t t "apply" patchs))
+          (helm-ls-git-revert-buffers-in-project)
+          (special-mode))
+      (when (zerop status) (quit-window nil (get-buffer-window buf))))))
 
 (defvar helm-ls-git-stashes-source
   (helm-build-in-buffer-source "Stashes"
@@ -1519,6 +1554,8 @@ object will be passed git rebase i.e. git rebase -i <hash>."
     :group 'helm-ls-git))
 
 ;;; Git status
+(defvar helm-ls-git--status-ignored-behavior "no")
+
 (defun helm-ls-git-status (&optional ignore-untracked)
   (when (and helm-ls-git-log-file
              (file-exists-p helm-ls-git-log-file))
@@ -1534,7 +1571,17 @@ object will be passed git rebase i.e. git rebase -i <hash>."
                      nil (list t helm-ls-git-log-file) nil
                      (if ignore-untracked
                          (list "status" "-uno" "--porcelain")
-                       (list "status" "--porcelain")))))))))
+                       (list "status"
+                             (format "--ignored=%s" helm-ls-git--status-ignored-behavior)
+                             "--porcelain")))))))))
+
+(defun helm-ls-git-status-toggle-ignored ()
+  (interactive)
+  (setq helm-ls-git--status-ignored-behavior
+        (helm-acase helm-ls-git--status-ignored-behavior
+          ("traditional" "no")
+          ("no" "traditional")))
+  (with-helm-window (helm-force-update)))
 
 (defun helm-ls-git-status-transformer (candidates _source)
   (cl-loop with root = (helm-ls-git-root-dir)
@@ -1546,7 +1593,7 @@ object will be passed git rebase i.e. git rebase -i <hash>."
                  ((string-match "^\\(M+ *\\)\\(.*\\)" i) ; modified and staged.
                   (cons (propertize i 'face 'helm-ls-git-modified-and-staged-face)
                         (expand-file-name (match-string 2 i) root)))
-                 ((string-match "^\\([?]\\{2\\} \\)\\(.*\\)" i)
+                 ((string-match "^\\([?!]\\{2\\} \\)\\(.*\\)" i)
                   (cons (propertize i 'face 'helm-ls-git-untracked-face)
                         (expand-file-name (match-string 2 i) root)))
                  ((string-match "^\\(AC? +\\)\\(.*\\)" i)
@@ -1577,7 +1624,7 @@ object will be passed git rebase i.e. git rebase -i <hash>."
                             "Copy file(s) `C-u to follow'" 'helm-find-files-copy
                             "Rename file(s) `C-u to follow'" 'helm-find-files-rename)))
     ;; Unregistered files
-    (cond ((string-match "^[?]\\{2\\}" disp)
+    (cond ((string-match "^[?!]\\{2\\}" disp)
            (append actions
                    (helm-make-actions "Add file(s)"
                                       (lambda (candidate)
@@ -1588,11 +1635,11 @@ object will be passed git rebase i.e. git rebase -i <hash>."
                                       "Delete file(s)"
                                       'helm-ff-delete-files
                                       (lambda ()
-                                        (and (string-match "\\`[?]\\{2\\}.*\\.patch\\|diff" disp)
+                                        (and (string-match "\\`[?!]\\{2\\}.*\\.patch\\|diff" disp)
                                              "Apply patch"))
                                       'helm-ls-git-apply-patch
                                       (lambda ()
-                                        (and (string-match "\\`[?]\\{2\\}.*\\.patch" disp)
+                                        (and (string-match "\\`[?!]\\{2\\}.*\\.patch" disp)
                                              "Git AM patches"))
                                       'helm-ls-git-am-files
                                       "Copy bnames to .gitignore"
@@ -1636,8 +1683,8 @@ object will be passed git rebase i.e. git rebase -i <hash>."
                               ("Stash (C-c z)" . helm-ls-git-stash)
                               ("Stash snapshot (C-c Z)" . helm-ls-git-stash-snapshot))
                             1)))
-          ;; Modified and staged
-          ((string-match "^M+ +" disp)
+          ;; Modified or renamed and staged
+          ((string-match "^[MR]+ +" disp)
            (append actions (helm-append-at-nth
                             mofified-actions
                             '(("Commit staged file(s)"
@@ -1661,44 +1708,51 @@ object will be passed git rebase i.e. git rebase -i <hash>."
                             1)))
           ;; Deleted
           ((string-match "^ D " disp)
-           (append actions (list '("Git delete" . (lambda (_candidate)
-                                                    (let ((mkd (helm-marked-candidates)))
-                                                      (cl-loop for c in mkd
-                                                               do (helm-ls-git-rm c)))))
-                                 '("Stage file(s)"
-                                   . helm-ls-git-stage-files))))
+           (append actions (helm-make-actions
+                            "Git delete" (lambda (_candidate)
+                                           (let ((mkd (helm-marked-candidates)))
+                                             (cl-loop for c in mkd
+                                                      do (helm-ls-git-rm c))))
+                            "Git restore" (lambda (_candidate)
+                                            (let ((mkd (helm-marked-candidates)))
+                                              (cl-loop for c in mkd
+                                                       do (helm-ls-git-restore c))))
+                            "Stage file(s)" 'helm-ls-git-stage-files)))
           ;; Deleted and staged
           ((string-match "^A?D +" disp)
-           (append actions (list '("Commit staged file(s)"
-                                   . helm-ls-git-commit)
-                                 '("Unstage file(s)"
-                                   . helm-ls-git-unstage-files)
-                                 '("Update index"
-                                   . (lambda (_candidate)
-                                       (let ((default-directory (helm-default-directory)))
-                                         (process-file "git" nil nil nil
-                                                       "add" "-u"))))
-                                 '("Stage marked file(s) and commit"
-                                   . helm-ls-git-stage-marked-and-commit))))
+           (append actions (helm-make-actions
+                            "Commit staged file(s)" 'helm-ls-git-commit
+                            "Unstage file(s)" 'helm-ls-git-unstage-files
+                            "Update index" (lambda (_candidate)
+                                             (let ((default-directory (helm-default-directory)))
+                                               (process-file "git" nil nil nil
+                                                             "add" "-u")))
+                            "Stage marked file(s) and commit"
+                            'helm-ls-git-stage-marked-and-commit)))
           ;; Conflict
           ((string-match "^U+ +" disp)
-           (append actions (list '("Git cherry-pick abort" . helm-ls-git-cherry-pick-abort)
-                                 '("Git rebase abort" . helm-ls-git-rebase-abort)
-                                 '("Git AM abort" . helm-ls-git-am-abort)
-                                 '("Git merge abort" . helm-ls-git-merge-abort)
-                                 '("Git revert abort" . helm-ls-git-log-revert-abort))))
+           (append actions (helm-make-actions
+                            "Git cherry-pick abort" 'helm-ls-git-cherry-pick-abort
+                            "Git rebase abort" 'helm-ls-git-rebase-abort
+                            "Git AM abort" 'helm-ls-git-am-abort
+                            "Git merge abort" 'helm-ls-git-merge-abort
+                            "Git revert abort" 'helm-ls-git-log-revert-abort)))
           (t actions))))
 
 (defun helm-ls-git-am-files (_candidate)
-  (let ((files (helm-marked-candidates)))
-    (cl-assert (cl-loop for f in files
-                        for ext = (file-name-extension f)
-                        always (and ext (string= ext "patch"))))
-    (with-current-buffer-window "*git am*" '(display-buffer-below-selected
-                                             (window-height . fit-window-to-buffer)
-                                             (preserve-size . (nil . t)))
-        nil
-      (apply #'process-file "git" nil t nil "am" files))))
+  (with-helm-default-directory (helm-default-directory)
+    (let ((files (helm-marked-candidates))
+          (buf "*git am*"))
+      (cl-assert (cl-loop for f in files
+                          for ext = (file-name-extension f)
+                          always (and ext (string= ext "patch"))))
+      (with-current-buffer-window buf '(display-buffer-below-selected
+                                               (window-height . fit-window-to-buffer)
+                                               (preserve-size . (nil . t)))
+          nil
+        (apply #'process-file "git" nil t nil "am" files)
+        (special-mode)
+        (helm-ls-git-revert-buffers-in-project)))))
 
 (defun helm-ls-git-am-abort (_candidate)
   (with-helm-default-directory (helm-default-directory)
@@ -1708,6 +1762,11 @@ object will be passed git rebase i.e. git rebase -i <hash>."
   (with-helm-default-directory (helm-default-directory)
     (let ((files (helm-marked-candidates)))
     (apply #'process-file "git" nil nil nil "rm" files))))
+
+(defun helm-ls-git-restore (_candidate)
+  (with-helm-default-directory (helm-default-directory)
+    (let ((files (helm-marked-candidates)))
+    (apply #'process-file "git" nil nil nil "restore" files))))
 
 (defun helm-ls-git-switch-to-shell (_candidate)
   (let ((helm-ff-default-directory
@@ -1740,6 +1799,9 @@ object will be passed git rebase i.e. git rebase -i <hash>."
 
 ;;; Stage and commit
 ;;
+(defvar helm-ls-git--server-edit-aborted nil
+  "Flag set when user abort a commit.")
+
 (defun helm-ls-git-stage-files (_candidate)
   "Stage marked files."
   (let* ((files (helm-marked-candidates))
@@ -1768,16 +1830,29 @@ object will be passed git rebase i.e. git rebase -i <hash>."
 
 (defun helm-ls-git-commit-sentinel (process event)
   (let ((default-directory (with-current-buffer (process-buffer process)
-                             default-directory)))
-    (when (string= event "finished\n")
-      (let ((commit (helm-ls-git-oneline-log (helm-ls-git--branch))))
-        (when (string-match "\\`\\([^ ]+\\)+ +\\(.*\\)" commit)
-          (add-face-text-property 0 (match-end 1)
-                                  'font-lock-type-face nil commit)
-          (add-face-text-property (1+ (match-end 1))
-                                  (match-end 2)
-                                  'font-lock-function-name-face nil commit))
-        (message "Commit done, now at `%s'" commit)))))
+                             default-directory))
+        (status (process-exit-status process)))
+    (if (string= event "finished\n")
+        (let ((commit (helm-ls-git-oneline-log (helm-ls-git--branch))))
+          (when (string-match "\\`\\([^ ]+\\)+ +\\(.*\\)" commit)
+            (add-face-text-property 0 (match-end 1)
+                                    'font-lock-type-face nil commit)
+            (add-face-text-property (1+ (match-end 1))
+                                    (match-end 2)
+                                    'font-lock-function-name-face nil commit))
+          (message "Commit done, now at `%s'" commit))
+      ;; Something went wrong but it is not an abort from user (which
+      ;; exit with code 1 as well).
+      (when (and (not helm-ls-git--server-edit-aborted)
+                 (eql status 1))
+        (pop-to-buffer (process-buffer process)
+                       '(display-buffer-at-bottom
+                         (window-height . fit-window-to-buffer)
+	                 (preserve-size . (nil . t))))
+        (process-file "git" nil nil nil "reset" "HEAD")
+        (goto-char (point-min))
+        (special-mode)))
+      (setq helm-ls-git--server-edit-aborted nil)))
 
 (defun helm-ls-git-run-stage-marked-and-commit ()
   (interactive)
@@ -1830,6 +1905,9 @@ object will be passed git rebase i.e. git rebase -i <hash>."
 ;;
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("/COMMIT_EDITMSG$" . helm-ls-git-commit-mode))
+;; Prevent errors when commit contains modifications to local variables.
+;;;###autoload
+(add-to-list 'inhibit-local-variables-regexps "/COMMIT_EDITMSG$")
 
 (defvar helm-ls-git-author-name-history nil)
 (defvar helm-ls-git-author-email-history nil)
@@ -1866,11 +1944,10 @@ context i.e. use it in helm actions."
     (apply #'start-file-process "git" bname "git" args)))
 
 (defun helm-ls-git-server-edit ()
+  "Prevent server asking to save file when done."
   (interactive)
-  (cl-assert server-clients nil "No server editing buffers exist")
-  ;; Prevent server asking to save file when done.
-  (helm-aif buffer-file-name
-      (save-buffer it))
+  (cl-assert server-clients nil "No server editing buffers exists")
+  (when buffer-file-name (save-buffer 0))
   (server-edit))
 
 ;; Same as `server-edit-abort' from emacs-28 but kill edit buffer as well.
@@ -1884,6 +1961,11 @@ context i.e. use it in helm actions."
                  proc (concat "-error "
                               (server-quote-arg "Aborted by the user"))))
               server-clients)
+        (set-buffer-modified-p nil) ; Don't ask to save buffer.
+        (setq helm-ls-git--server-edit-aborted t)
+        ;; Unstage all on commit but not on rebase.
+        (when (string= "COMMIT_EDITMSG" (buffer-name))
+          (process-file "git" nil nil nil "reset" "HEAD"))
         (kill-buffer))
     (message "This buffer has no clients")))
 
@@ -1903,7 +1985,7 @@ Commands:
   (helm-ls-git-with-editor-setup))
 
 (defun helm-ls-git-with-editor-setup ()
-  (setq fill-column 70)
+  (setq fill-column helm-ls-git-with-editor-fill-column)
   ;; For some reasons, using (setq buffer-read-only nil) in emacs-29
   ;; doesn't work anymore.
   (read-only-mode -1)
@@ -1920,6 +2002,8 @@ Commands:
 ;;
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("/git-rebase-todo$" . helm-ls-git-rebase-todo-mode))
+;;;###autoload
+(add-to-list 'inhibit-local-variables-regexps "/git-rebase-todo$")
 
 (defconst helm-ls-git-rebase-actions
   '(("p" . "pick")
